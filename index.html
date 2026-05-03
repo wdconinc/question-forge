@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuestionForge — PHYS 1020 Exam Authoring</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+      background: #fff; color: #222;
+    }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: fixed; inset: 0; background: #1e3a5f; color: white;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; z-index: 9999; transition: opacity 0.4s;
+    }
+    #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 52px; height: 52px;
+      border: 4px solid rgba(240,171,0,0.25);
+      border-top-color: #f0ab00; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Top bar */
+    #top-bar {
+      flex-shrink: 0; background: #1e3a5f; color: white;
+      padding: 5px 12px; display: flex; align-items: center;
+      flex-wrap: wrap; gap: 6px; font-size: 13px;
+      border-bottom: 3px solid #f0ab00; min-height: 42px;
+    }
+    .brand { font-size: 15px; font-weight: 700; color: #f0ab00; white-space: nowrap; margin-right: 4px; }
+    #top-bar label { display: flex; align-items: center; gap: 3px; white-space: nowrap; font-size: 12px; }
+    #top-bar input[type="text"], #top-bar input[type="number"] {
+      background: rgba(255,255,255,0.13); border: 1px solid rgba(255,255,255,0.28);
+      border-radius: 3px; color: white; padding: 2px 5px; font-size: 12px;
+    }
+    #top-bar input:focus { outline: none; border-color: #f0ab00; background: rgba(255,255,255,0.22); }
+    .tb-sep { width: 1px; background: rgba(255,255,255,0.25); height: 18px; flex-shrink: 0; }
+    .btn {
+      padding: 3px 9px; border-radius: 4px; border: none; cursor: pointer;
+      font-size: 12px; font-weight: 500; transition: background 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    .btn-primary { background: #f0ab00; color: #1e3a5f; }
+    .btn-primary:hover:not(:disabled) { background: #ffc107; }
+    .btn-secondary { background: rgba(255,255,255,0.18); color: white; border: 1px solid rgba(255,255,255,0.35); }
+    .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.28); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .paper-check-label {
+      display: flex; align-items: center; gap: 2px; font-size: 12px;
+      padding: 2px 6px; border: 1px solid rgba(255,255,255,0.35); border-radius: 3px; cursor: pointer;
+    }
+    .paper-check-label input { margin: 0; accent-color: #f0ab00; }
+
+    /* Main layout */
+    #main { flex: 1; display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
+
+    /* Sidebar */
+    #sidebar { overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid #ddd; background: #f4f5f7; }
+    #sidebar-header { padding: 6px; background: #e9eaed; border-bottom: 1px solid #ddd; display: flex; gap: 4px; flex-shrink: 0; }
+    #question-list { flex: 1; overflow-y: auto; padding: 3px; }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 4px; padding: 5px 5px;
+      border-radius: 4px; cursor: pointer; margin-bottom: 2px;
+      border: 1px solid transparent; font-size: 12px;
+      transition: background 0.1s; user-select: none;
+    }
+    .sidebar-item:hover { background: #e0e3ea; }
+    .sidebar-item.selected { background: #1e3a5f; color: white; }
+    .sidebar-item.disabled-q { opacity: 0.42; }
+    .q-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .q-stars { color: #f0ab00; font-size: 10px; flex-shrink: 0; }
+    .sidebar-item.selected .q-stars { color: #ffe080; }
+    .q-delete {
+      background: none; border: none; cursor: pointer; font-size: 13px;
+      padding: 0 1px; opacity: 0.4; transition: opacity 0.1s; flex-shrink: 0; line-height: 1;
+    }
+    .q-delete:hover { opacity: 1; }
+    .sidebar-item input[type="checkbox"] { flex-shrink: 0; cursor: pointer; accent-color: #f0ab00; }
+    .sortable-ghost { opacity: 0.4; background: #c8d8f0; }
+
+    /* Editor area */
+    #editor-area { display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Editor panels */
+    .ep { display: flex; flex-direction: column; overflow: hidden; }
+    .ep-hdr {
+      background: #e9eaed; border-bottom: 1px solid #ddd;
+      padding: 3px 10px; font-size: 11.5px; font-weight: 600; color: #444;
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    .ep-hdr span { flex: 1; }
+    .ep-body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .ep-body .cm-editor { flex: 1; overflow: hidden; font-size: 12.5px; }
+    .ep-body .cm-scroller { overflow: auto !important; }
+
+    /* Resizer */
+    .resizer { height: 4px; background: #ddd; cursor: ns-resize; flex-shrink: 0; transition: background 0.1s; }
+    .resizer:hover { background: #f0ab00; }
+
+    /* Preview */
+    #preview-panel { overflow-y: auto; background: white; }
+    #preview-hdr {
+      background: #e9eaed; border-bottom: 1px solid #ddd;
+      padding: 3px 10px; font-size: 11.5px; font-weight: 600; color: #444;
+      display: flex; align-items: center; gap: 8px;
+      position: sticky; top: 0; z-index: 2;
+    }
+    #preview-hdr span { flex: 1; }
+    #preview-content { padding: 14px 18px; font-size: 14px; line-height: 1.6; }
+    .preview-answer {
+      margin-top: 10px; padding: 6px 10px;
+      background: #e8f5e9; border-left: 3px solid #43a047;
+      border-radius: 3px; font-size: 12.5px; color: #2e7d32;
+    }
+    .preview-meta { margin-top: 6px; font-size: 11px; color: #777; }
+    .error-box {
+      background: #ffebee; border-left: 3px solid #ef5350;
+      padding: 10px 14px; border-radius: 3px;
+      font-family: "SF Mono", Consolas, monospace; font-size: 12px;
+      white-space: pre-wrap; color: #b71c1c;
+    }
+
+    /* No question placeholder */
+    #no-q-msg {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      color: #aaa; font-size: 14px; font-style: italic;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 18px; right: 18px; background: #323232; color: white;
+      padding: 9px 14px; border-radius: 5px; font-size: 13px; z-index: 9998;
+      opacity: 0; transform: translateY(8px); transition: all 0.2s; pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.success { background: #2e7d32; }
+    #toast.error { background: #c62828; }
+
+    /* Progress */
+    #progress-bar {
+      height: 3px; background: #f0ab00; position: fixed; top: 0; left: 0;
+      width: 0; transition: width 0.3s ease; z-index: 10000; pointer-events: none;
+    }
+  </style>
+
+  <!-- MathJax config must come before loading the script -->
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]] },
+      startup: { typeset: false },
+      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre"] }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2/dist/FileSaver.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1/Sortable.min.js"></script>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div style="margin-top:18px;font-size:22px;font-weight:700;color:#f0ab00;letter-spacing:.5px">⚗ QuestionForge</div>
+  <div style="margin-top:6px;font-size:14px;color:rgba(255,255,255,0.75)">PHYS 1020 Exam Authoring</div>
+  <div id="loading-status" style="margin-top:14px;font-size:12px;color:rgba(255,255,255,0.55)">Initializing…</div>
+</div>
+
+<!-- Top bar -->
+<div id="top-bar">
+  <span class="brand">⚗ QuestionForge</span>
+  <div class="tb-sep"></div>
+  <label>Course: <input type="text" id="setting-course" style="width:85px" value="PHYS 1020"></label>
+  <label>Date: <input type="text" id="setting-date" style="width:118px" value="April 20, 2026"></label>
+  <label>Duration: <input type="text" id="setting-duration" style="width:68px" value="3 hours"></label>
+  <div class="tb-sep"></div>
+  <span style="font-size:11px;opacity:0.8">Seeds:</span>
+  <label>A <input type="number" id="setting-seed-a" style="width:54px" value="42"></label>
+  <label>B <input type="number" id="setting-seed-b" style="width:54px" value="137"></label>
+  <label>C <input type="number" id="setting-seed-c" style="width:54px" value="271"></label>
+  <div class="tb-sep"></div>
+  <span style="font-size:11px;opacity:0.8">Papers:</span>
+  <label class="paper-check-label"><input type="checkbox" id="paper-check-A" checked>A</label>
+  <label class="paper-check-label"><input type="checkbox" id="paper-check-B" checked>B</label>
+  <label class="paper-check-label"><input type="checkbox" id="paper-check-C">C</label>
+  <div class="tb-sep"></div>
+  <button class="btn btn-primary" id="btn-render-all" disabled title="Render enabled papers to Markdown">▶ Render All</button>
+  <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
+  <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
+  <button class="btn btn-secondary" id="btn-reset" style="margin-left:auto;font-size:11px;opacity:0.75" title="Reset to default question bank">↺ Reset</button>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <button class="btn btn-primary" id="btn-new-q" style="flex:1;font-size:11px">+ New</button>
+      <button class="btn btn-secondary" id="btn-import-sb" style="font-size:11px" title="Import from ZIP">⬆ Import</button>
+    </div>
+    <div id="question-list"></div>
+  </div>
+
+  <!-- Editor area -->
+  <div id="editor-area">
+    <!-- No question message (shown when nothing is selected) -->
+    <div id="no-q-msg">Select or create a question to start editing.</div>
+
+    <!-- Editor panels container (hidden when no question) -->
+    <div id="editor-panels" style="display:none;flex-direction:column;height:100%;overflow:hidden">
+
+      <!-- Jinja2 template editor -->
+      <div class="ep" id="ep-template" style="flex:1;min-height:110px">
+        <div class="ep-hdr">
+          <span>🧩 Jinja2 Template</span>
+        </div>
+        <div class="ep-body" id="wrap-template"></div>
+      </div>
+
+      <div class="resizer" id="rsz-1"></div>
+
+      <!-- Python generator editor -->
+      <div class="ep" id="ep-python" style="flex:1;min-height:110px">
+        <div class="ep-hdr">
+          <span>🐍 Python Generator</span>
+          <button class="btn btn-primary" id="btn-preview" disabled style="font-size:11px;padding:2px 8px">▶ Preview</button>
+        </div>
+        <div class="ep-body" id="wrap-python"></div>
+      </div>
+
+      <div class="resizer" id="rsz-2"></div>
+
+      <!-- Preview panel -->
+      <div id="preview-panel" style="flex:1.4;overflow-y:auto;display:flex;flex-direction:column;min-height:100px">
+        <div id="preview-hdr">
+          <span>👁 Preview</span>
+          <span id="preview-seed-label" style="font-weight:normal;color:#888;font-size:10.5px">seed: A=42</span>
+        </div>
+        <div id="preview-content" style="flex:1;padding:14px 18px;font-size:14px;line-height:1.6">
+          <p style="color:#aaa;font-style:italic">Select a question and click ▶ Preview.</p>
+        </div>
+      </div>
+
+    </div><!-- #editor-panels -->
+  </div><!-- #editor-area -->
+</div><!-- #main -->
+
+<div id="toast"></div>
+<div id="progress-bar"></div>
+
+<!-- ============================================================
+     Embedded Python source files (read via textContent in JS)
+     ============================================================ -->
+<script type="text/plain" id="src-init-py">
+# Question modules for PHYS 1020 Final Exam
+# Each module exports: generate(rng: numpy.random.Generator) -> dict
+# Return dict keys:
+#   question  : str   — full question text (Markdown)
+#   choices   : list[str] of exactly 5 items — answer choices (a)–(e)
+#   answer    : str   — correct choice letter, one of 'a','b','c','d','e'
+#   topic     : str   — brief topic label (e.g. "Ch.7 Work-Energy Theorem")
+
+import math
+import os
+import jinja2
+
+_QUESTIONS_DIR = os.path.dirname(os.path.abspath(__file__))
+_jinja_env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(_QUESTIONS_DIR),
+    trim_blocks=True,
+    lstrip_blocks=True,
+    keep_trailing_newline=False,
+    undefined=jinja2.StrictUndefined,
+)
+
+
+def render_template(name: str, params: dict) -> str:
+    """Render the Jinja2 template *name*.j2 from the questions/ directory.
+
+    Parameters
+    ----------
+    name : str
+        Template base name without extension, e.g. ``"q06_newton2"``.
+    params : dict
+        Variables passed to the template context.
+
+    Returns
+    -------
+    str
+        Rendered question text, stripped of leading/trailing whitespace.
+    """
+    tpl = _jinja_env.get_template(f"{name}.j2")
+    return tpl.render(**params).strip()
+
+
+def phys_fmt(v: float, sig: int = 3) -> str:
+    """Format a number with *sig* significant figures for a printed exam.
+
+    Avoids Python's default 'e+03' notation:
+    - Values in [0.001, 10000): formatted directly (e.g. "1740", "29.4", "0.085")
+    - Values >= 10000 or < 0.001: formatted as LaTeX "$M.mm \\times 10^{n}$"
+    """
+    if not math.isfinite(v) or v == 0:
+        return "0"
+    exp = int(math.floor(math.log10(abs(v))))
+    if exp >= 4 or exp <= -4:
+        mantissa = v / 10 ** exp
+        return f"${mantissa:.{sig - 1}f} \\times 10^{{{exp}}}$"
+    else:
+        decimal_places = max(0, sig - 1 - exp)
+        return f"{v:.{decimal_places}f}"
+
+
+def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float = 0.12) -> list:
+    """
+    Build [correct, d1, d2, d3, d4] with guaranteed uniqueness and minimum
+    relative spacing between any pair of choices.
+
+    correct_val : float — the numerically correct answer
+    distractors : list of 4 floats — proposed distractor values
+    fmt         : callable(float) -> str — formatter
+    min_spacing : minimum required relative difference |a-b|/max(|a|,|b|)
+                  between any two choice values (default 12 %).
+
+    Returns list of 5 unique strings; correct is always at index 0.
+    If a distractor is too close to the correct value or any already-placed
+    choice, it is replaced by correct_val * fallback_multiplier.
+    """
+    def _too_close(v, existing_vals):
+        """Return True if v is within min_spacing of any value in existing_vals."""
+        if v == 0:
+            return any(ev == 0 for ev in existing_vals)
+        for ev in existing_vals:
+            if ev == 0:
+                continue
+            # Opposite signs are always distinguishable
+            if (v < 0) != (ev < 0):
+                continue
+            if abs(v - ev) / max(abs(v), abs(ev)) < min_spacing:
+                return True
+        return False
+
+    correct_str = fmt(correct_val)
+    used_strs = {correct_str}
+    used_vals = [correct_val]
+    result = [correct_str]
+
+    fallbacks = [0.5, 0.25, 1.5, 2.0, 0.75, 3.0, 0.1, 4.0, 1.25, 0.333,
+                 5.0, 0.2, 6.0, 0.4, 7.0, 8.0, 0.6, 9.0, 10.0, 0.05,
+                 2.3, 2.7, 3.5, 4.5, 11.0, 12.0, 0.3, 0.15, 0.08]
+    fb_idx = 0
+
+    for d in distractors:
+        s = fmt(d)
+        if s not in used_strs and not _too_close(d, used_vals):
+            used_strs.add(s)
+            used_vals.append(d)
+            result.append(s)
+        else:
+            placed = False
+            while fb_idx < len(fallbacks):
+                candidate = correct_val * fallbacks[fb_idx]
+                fb_idx += 1
+                if candidate == 0:
+                    continue
+                cs = fmt(candidate)
+                if cs not in used_strs and not _too_close(candidate, used_vals):
+                    used_strs.add(cs)
+                    used_vals.append(candidate)
+                    result.append(cs)
+                    placed = True
+                    break
+            if not placed:
+                for mult in [1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8]:
+                    cs = fmt(correct_val * mult)
+                    candidate = correct_val * mult
+                    if cs not in used_strs and not _too_close(candidate, used_vals):
+                        used_strs.add(cs)
+                        used_vals.append(candidate)
+                        result.append(cs)
+                        placed = True
+                        break
+
+    return result
+
+</script>
+
+<script type="text/plain" id="src-exam-core-py">
+# exam_core.py — runs inside Pyodide
+# Browser-compatible exam assembly logic (no argparse, no file I/O)
+import sys
+import json
+import numpy as np
+
+LETTERS = ["a", "b", "c", "d", "e"]
+
+
+def local_shuffle_order(n, rng):
+    """Shuffle with max displacement of 2 (adjacent-swap, two rounds)."""
+    order = list(range(n))
+    for i in range(0, n - 1, 2):
+        if rng.random() < 0.5:
+            order[i], order[i+1] = order[i+1], order[i]
+    for i in range(1, n - 1, 2):
+        if rng.random() < 0.5:
+            order[i], order[i+1] = order[i+1], order[i]
+    return order
+
+
+def assign_answer_positions(n, rng):
+    assert n % 5 == 0
+    pool = np.array(LETTERS * (n // 5))
+    rng.shuffle(pool)
+    return pool.tolist()
+
+
+def apply_answer_positions(data_list, positions, rng):
+    for datum, target in zip(data_list, positions):
+        choices = list(datum["choices"])
+        curr_idx = LETTERS.index(datum["answer"])
+        tgt_idx  = LETTERS.index(target)
+        correct  = choices[curr_idx]
+        distractors = [choices[i] for i in range(5) if i != curr_idx]
+        rng.shuffle(distractors)
+        result = [None] * 5
+        result[tgt_idx] = correct
+        d_iter = iter(distractors)
+        for i in range(5):
+            if result[i] is None:
+                result[i] = next(d_iter)
+        datum["choices"] = result
+        datum["answer"]  = target
+
+
+def render_question_block(q_num, data):
+    lines = [f"**{q_num}.** {data['question']}", ""]
+    for letter, choice in zip(LETTERS, data["choices"]):
+        lines.append(f"({letter}) {choice}")
+    lines.append("")
+    return "\n".join(lines), data["answer"]
+
+
+def build_header(meta):
+    paper = meta.get("paper", "A")
+    course = meta.get("course", "PHYS 1020")
+    exam_type = meta.get("examType", "FINAL EXAMINATION")
+    date = meta.get("date", "")
+    time_slot = meta.get("timeSlot", "")
+    duration = meta.get("duration", "3 hours")
+    examiners = meta.get("examiners", "")
+    num_q = meta.get("numQuestions", 30)
+    return f"""---
+**UNIVERSITY OF MANITOBA**
+**{exam_type.upper()}**
+
+**{date}**
+**(Paper {paper})**
+
+**DEPARTMENT & COURSE NO.:** {course}  
+**TIME:** {duration}  
+**EXAMINERS:** {examiners}
+
+---
+
+All questions are of equal value. This is **Paper {paper}**. Questions are numbered 1 to {num_q}.
+
+---
+
+**TABLE OF CONSTANTS**
+
+| Constant | Value |
+|---|---|
+| $G$ | $6.674 \\times 10^{{-11}}\\ \\text{{m}}^3\\,\\text{{kg}}^{{-1}}\\,\\text{{s}}^{{-2}}$ |
+| $g$ | $9.80\\ \\text{{m/s}}^2$ |
+| Mass of the Earth | $5.97 \\times 10^{{24}}\\ \\text{{kg}}$ |
+| Radius of the Earth | $6.38 \\times 10^{{3}}\\ \\text{{km}}$ |
+| Speed of sound in air (20 °C) | $343\\ \\text{{m/s}}$ |
+| Speed of light | $3.00 \\times 10^{{8}}\\ \\text{{m/s}}$ |
+
+---
+"""
+
+
+def render_paper(question_bank, question_order, meta, seed):
+    """Generate one exam paper. Returns (markdown_str, answers_list, ordered_data)."""
+    rng = np.random.default_rng(seed)
+    data_orig = []
+    import jinja2 as _j2
+    import questions as _qmod
+
+    for qid in question_order:
+        q = question_bank[qid]
+        # Monkey-patch render_template BEFORE exec so from-import captures the patched version
+        _tpl = _j2.Environment(
+            trim_blocks=True, lstrip_blocks=True,
+            keep_trailing_newline=False,
+            undefined=_j2.StrictUndefined,
+        ).from_string(q["template"])
+        def _rt(name, params, _t=_tpl):
+            return _t.render(**params).strip()
+        _orig_rt = _qmod.render_template
+        _qmod.render_template = _rt
+        try:
+            ns = {}
+            exec(compile(q["python_code"], qid + ".py", "exec"), ns)
+            q_rng = np.random.default_rng(rng.integers(0, 2**63))
+            data_orig.append(ns["generate"](q_rng))
+        finally:
+            _qmod.render_template = _orig_rt
+
+    order = local_shuffle_order(len(question_order), rng)
+    data = [data_orig[i] for i in order]
+    pos_rng = np.random.default_rng([seed, 0xF1A1A])
+    apply_answer_positions(data, assign_answer_positions(len(data), pos_rng), pos_rng)
+    lines = [build_header(meta)]
+    answers = []
+    for i, d in enumerate(data, 1):
+        block, ans = render_question_block(i, d)
+        lines.append(block)
+        answers.append(ans)
+    return "\n".join(lines), answers
+
+</script>
+
+<script type="text/plain" id="src-render-py">
+#!/usr/bin/env python3
+"""
+render.py — PHYS 1020 Final Exam renderer
+==========================================
+Assembles the 30-question final exam from individual question modules
+and renders two randomized versions (A and B) as Markdown files.
+
+Usage
+-----
+    python render.py [--seed-A INT] [--seed-B INT] [--out-dir PATH]
+
+Outputs
+-------
+    exam_A.md       — Paper A (version 1)
+    exam_B.md       — Paper B (version 2, different parameters + shuffled choices)
+    answer_key.md   — Answer key for both papers
+"""
+
+import argparse
+import importlib
+import textwrap
+from pathlib import Path
+
+import numpy as np
+from jinja2 import Environment, FileSystemLoader
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+EXAM_META = {
+    "exam_type": "FINAL EXAMINATION",
+    "date": "April 20, 2026",
+    "time_slot": "9:00 AM – 11:00 AM",
+    "duration": "3 hours",
+    "num_questions": 30,
+}
+
+# Ordered list of question module names (must live in questions/)
+QUESTION_MODULES = [
+    "q01_units",
+    "q02_kinematics_1d",
+    "q03_free_fall",
+    "q04_vectors",
+    "q05_projectile",
+    "q06_newton2",
+    "q07_friction",
+    "q08_atwood",
+    "q09_circular",
+    "q10_banked_curve",
+    "q31_synthesis_proj_energy",
+    "q12_work_energy",
+    "q13_energy_conservation",
+    "q32_synthesis_incline_energy",
+    "q15_momentum",
+    "q16_collision",
+    "q17_rot_kinematics",
+    "q18_torque",
+    "q19_rot_dynamics",
+    "q20_angular_momentum",
+    "q21_shm_period",
+    "q22_shm_energy",
+    "q23_pressure",
+    "q24_buoyancy",
+    "q33_synthesis_loop",
+    "q26_bernoulli",
+    "q27_temperature",
+    "q28_calorimetry",
+    "q29_heat_transfer",
+    "q30_thermo_laws",
+]
+
+LETTERS = ["a", "b", "c", "d", "e"]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def local_shuffle_order(n: int, rng: np.random.Generator) -> list:
+    """Return a permutation of range(n) where every element stays within
+    ±2 positions of its original index.
+
+    Uses two rounds of random adjacent swaps:
+      Round 1: even-indexed pairs (0,1), (2,3), (4,5), …
+      Round 2: odd-indexed pairs  (1,2), (3,4), (5,6), …
+
+    After both rounds the maximum displacement is exactly 2.
+    """
+    order = list(range(n))
+    for i in range(0, n - 1, 2):          # even pairs
+        if rng.random() < 0.5:
+            order[i], order[i + 1] = order[i + 1], order[i]
+    for i in range(1, n - 1, 2):          # odd pairs
+        if rng.random() < 0.5:
+            order[i], order[i + 1] = order[i + 1], order[i]
+    return order
+
+
+def load_question(module_name: str):
+    """Import a question module from the questions/ package."""
+    return importlib.import_module(f"questions.{module_name}")
+
+
+def assign_answer_positions(n: int, rng: np.random.Generator) -> list:
+    """Return a shuffled list of n answer letters where each of a/b/c/d/e appears
+    exactly n//5 times (n must be divisible by 5).  Uses *rng* so the assignment
+    is deterministic given the paper seed."""
+    assert n % 5 == 0, f"n={n} must be divisible by 5"
+    pool = np.array(LETTERS * (n // 5))
+    rng.shuffle(pool)
+    return pool.tolist()
+
+
+def apply_answer_positions(data_list: list, positions: list, rng: np.random.Generator) -> None:
+    """Permute each datum's choices in-place so the correct answer lands at the
+    letter given by *positions[i]*; the four distractors are randomly reordered."""
+    for datum, target in zip(data_list, positions):
+        choices = list(datum["choices"])
+        curr_idx = LETTERS.index(datum["answer"])
+        tgt_idx = LETTERS.index(target)
+
+        correct_choice = choices[curr_idx]
+        distractors = [choices[i] for i in range(5) if i != curr_idx]
+        rng.shuffle(distractors)
+
+        result = [None] * 5
+        result[tgt_idx] = correct_choice
+        d_iter = iter(distractors)
+        for i in range(5):
+            if i != tgt_idx:
+                result[i] = next(d_iter)
+
+        datum["choices"] = result
+        datum["answer"] = target
+
+
+def render_question(q_num: int, data: dict) -> tuple[str, str]:
+    """Render a single question as a Markdown block.
+
+    Returns (markdown_block, correct_letter).  Choices must already be in their
+    final order (call apply_answer_positions beforehand).
+    """
+    lines = [f"**{q_num}.** {data['question']}", ""]
+    for letter, choice in zip(LETTERS, data["choices"]):
+        lines.append(f"({letter}) {choice}")
+    lines.append("")
+    return "\n".join(lines), data["answer"]
+
+
+def render_exam(paper: str, questions_data: list[dict]) -> tuple[str, list[str]]:
+    """Render the full exam Markdown for one paper.
+
+    Returns (exam_markdown, list_of_correct_letters).
+    """
+    env = Environment(
+        loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
+        keep_trailing_newline=True,
+    )
+    header_tmpl = env.get_template("exam_header.md.j2")
+    header = header_tmpl.render(paper=paper, **EXAM_META)
+
+    blocks = [header]
+    answers = []
+
+    for i, data in enumerate(questions_data, start=1):
+        block, correct = render_question(i, data)
+        blocks.append(block)
+        answers.append(correct)
+
+    return "\n".join(blocks), answers
+
+
+def render_answer_key(
+    answers_A: list, order_A: list,
+    answers_B: list, order_B: list,
+    answers_C: list, order_C: list,
+    topics: list,
+    difficulties: list,
+) -> str:
+    STARS = {1: "★", 2: "★★", 3: "★★★", 4: "★★★★"}
+    lines = [
+        "# Answer Key — PHYS 1020 Final Exam",
+        "",
+        "| Pos | Paper A answer | Paper A orig Q | Paper B answer | Paper B orig Q | Paper C answer | Paper C orig Q | Difficulty | Topic |",
+        "|-----|----------------|----------------|----------------|----------------|----------------|----------------|------------|-------|",
+    ]
+    for pos in range(len(answers_A)):
+        qa, qb, qc = order_A[pos] + 1, order_B[pos] + 1, order_C[pos] + 1
+        topic = topics[pos]
+        stars = STARS[difficulties[pos]]
+        lines.append(
+            f"| {pos+1:2d}  | {answers_A[pos]}              | Q{qa:02d}           "
+            f"| {answers_B[pos]}              | Q{qb:02d}           "
+            f"| {answers_C[pos]}              | Q{qc:02d}           "
+            f"| {stars:10} | {topic} |"
+        )
+
+    # Distribution summary
+    from collections import Counter
+    dist_A = Counter(answers_A)
+    dist_B = Counter(answers_B)
+    dist_C = Counter(answers_C)
+    lines += [
+        "",
+        "## Answer distribution",
+        "",
+        "| Letter | Paper A | Paper B | Paper C |",
+        "|--------|---------|---------|---------|",
+    ]
+    for letter in LETTERS:
+        lines.append(f"| {letter}      | {dist_A[letter]:7d} | {dist_B[letter]:7d} | {dist_C[letter]:7d} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Render PHYS 1020 final exam")
+    parser.add_argument("--seed-A", type=int, default=42, help="RNG seed for Paper A")
+    parser.add_argument("--seed-B", type=int, default=137, help="RNG seed for Paper B")
+    parser.add_argument("--seed-C", type=int, default=271, help="RNG seed for Paper C (deferred)")
+    parser.add_argument("--out-dir", type=Path, default=Path("."), help="Output directory")
+    args = parser.parse_args()
+
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Loading {len(QUESTION_MODULES)} question modules...")
+    modules = []
+    for name in QUESTION_MODULES:
+        try:
+            modules.append(load_question(name))
+        except ModuleNotFoundError as exc:
+            print(f"  WARNING: {exc} — skipping {name}")
+
+    print(f"  Loaded {len(modules)} / {len(QUESTION_MODULES)} modules")
+
+    # Generate questions for Paper A
+    print(f"Generating Paper A (seed={args.seed_A})...")
+    rng_A = np.random.default_rng(args.seed_A)
+    data_A_orig = [mod.generate(rng_A) for mod in modules]
+    order_A = local_shuffle_order(len(modules), rng_A)
+    data_A = [data_A_orig[i] for i in order_A]
+    # Assign balanced answer positions (6× each letter), shuffle distractors
+    pos_rng_A = np.random.default_rng([args.seed_A, 0xF1A1A])
+    apply_answer_positions(data_A, assign_answer_positions(len(data_A), pos_rng_A), pos_rng_A)
+
+    # Generate questions for Paper B (different parameters)
+    print(f"Generating Paper B (seed={args.seed_B})...")
+    rng_B = np.random.default_rng(args.seed_B)
+    data_B_orig = [mod.generate(rng_B) for mod in modules]
+    order_B = local_shuffle_order(len(modules), rng_B)
+    data_B = [data_B_orig[i] for i in order_B]
+    pos_rng_B = np.random.default_rng([args.seed_B, 0xF1A1A])
+    apply_answer_positions(data_B, assign_answer_positions(len(data_B), pos_rng_B), pos_rng_B)
+
+    # Generate questions for Paper C (deferred exam)
+    print(f"Generating Paper C (seed={args.seed_C})...")
+    rng_C = np.random.default_rng(args.seed_C)
+    data_C_orig = [mod.generate(rng_C) for mod in modules]
+    order_C = local_shuffle_order(len(modules), rng_C)
+    data_C = [data_C_orig[i] for i in order_C]
+    pos_rng_C = np.random.default_rng([args.seed_C, 0xF1A1A])
+    apply_answer_positions(data_C, assign_answer_positions(len(data_C), pos_rng_C), pos_rng_C)
+
+    # Render
+    exam_A_md, answers_A = render_exam("A", data_A)
+    exam_B_md, answers_B = render_exam("B", data_B)
+    exam_C_md, answers_C = render_exam("C", data_C)
+    topics_A = [data_A_orig[i]["topic"] for i in order_A]
+    difficulties_A = [data_A_orig[i]["difficulty"] for i in order_A]
+    key_md = render_answer_key(
+        answers_A, order_A,
+        answers_B, order_B,
+        answers_C, order_C,
+        topics_A, difficulties_A,
+    )
+
+    # Write output
+    (out_dir / "exam_A.md").write_text(exam_A_md)
+    (out_dir / "exam_B.md").write_text(exam_B_md)
+    (out_dir / "exam_C.md").write_text(exam_C_md)
+    (out_dir / "answer_key.md").write_text(key_md)
+
+    print(f"Written: {out_dir}/exam_A.md, exam_B.md, exam_C.md, answer_key.md")
+    print("\nTo convert to Word:")
+    print("  pandoc exam_A.md -o exam_A.docx --reference-doc=template.docx --from=markdown-yaml_metadata_block")
+    print("  pandoc exam_C.md -o exam_C.docx --reference-doc=template.docx --from=markdown-yaml_metadata_block")
+
+
+if __name__ == "__main__":
+    main()
+
+</script>
+
+<!-- ============================================================
+     Main application (ES module)
+     ============================================================ -->
+<script type="module">
+import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
+import { python } from "https://esm.sh/@codemirror/lang-python@6.1.6";
+import { EditorState } from "https://esm.sh/@codemirror/state@6.4.1";
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const STORAGE_KEY = "questionforge_state";
+const PYODIDE_INDEX = "https://cdn.jsdelivr.net/pyodide/v0.27.0/full/";
+const STARS = { 1: "★", 2: "★★", 3: "★★★", 4: "★★★★" };
+const LETTERS = ["a", "b", "c", "d", "e"];
+
+// Embedded Python sources (from <script type="text/plain"> tags)
+const INIT_PY_SOURCE    = document.getElementById("src-init-py").textContent;
+const EXAM_CORE_SOURCE  = document.getElementById("src-exam-core-py").textContent;
+const RENDER_PY_SOURCE  = document.getElementById("src-render-py").textContent;
+
+const EXAM_HEADER_J2 = `---
+**UNIVERSITY OF MANITOBA**
+**{{ exam_type | upper }}**
+
+**{{ date }}**
+**({{ time_slot }})**
+**PAPER NO.: {{ paper }}**
+
+**DEPARTMENT & COURSE NO.:** PHYS 1020
+**EXAMINATION:** General Physics 1
+**TIME:** {{ duration }}
+**EXAMINERS:** {{ examiners | default("W. Deconinck") }}
+
+---
+
+All questions are of equal value. No marks are subtracted for wrong answers.
+Record all answers on the computer score sheet provided. **USE PENCIL ONLY!**
+
+This is **Paper {{ paper }}**. Questions are numbered 1 to {{ num_questions }}.
+
+---
+
+**TABLE OF CONSTANTS**
+
+| Constant | Value |
+|---|---|
+| $G$ | $6.674 \\times 10^{-11}\\ \\text{m}^3\\,\\text{kg}^{-1}\\,\\text{s}^{-2}$ |
+| $g$ | $9.80\\ \\text{m/s}^2$ |
+| Mass of the Earth | $5.97 \\times 10^{24}\\ \\text{kg}$ |
+| Radius of the Earth | $6.38 \\times 10^{3}\\ \\text{km}$ |
+| Speed of sound in air (20 °C) | $343\\ \\text{m/s}$ |
+| Speed of light | $3.00 \\times 10^{8}\\ \\text{m/s}$ |
+
+---
+`;
+
+// ── State ──────────────────────────────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+  course: "PHYS 1020", examType: "FINAL EXAMINATION",
+  date: "April 20, 2026", timeSlot: "9:00 AM \u2013 11:00 AM",
+  duration: "3 hours", examiners: "W. Deconinck",
+  seedA: 42, seedB: 137, seedC: 271,
+  papers: ["A", "B"], numQuestions: 30,
+};
+
+let state = null;
+let pyodide = null;
+let pyodideReady = false;
+let templateEditor = null;
+let pythonEditor = null;
+let saveTimer = null;
+
+// ── State persistence ──────────────────────────────────────────────────────
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      state = {
+        settings: { ...DEFAULT_SETTINGS, ...(p.settings || {}) },
+        questionOrder: p.questionOrder || [],
+        questions: p.questions || {},
+        selectedQuestion: p.selectedQuestion || null,
+      };
+      return true;
+    }
+  } catch (e) { console.warn("loadState:", e); }
+  state = { settings: { ...DEFAULT_SETTINGS }, questionOrder: [], questions: {}, selectedQuestion: null };
+  return false;
+}
+
+function saveState() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  catch (e) { console.warn("saveState:", e); }
+}
+
+function debounceSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveState, 600);
+}
+
+// ── Pyodide init ───────────────────────────────────────────────────────────
+async function initPyodide() {
+  setStatus("Loading Pyodide runtime\u2026");
+  try {
+    pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX });
+    setStatus("Loading NumPy\u2026");
+    await pyodide.loadPackage(["numpy"]);
+    setStatus("Installing Jinja2 via micropip\u2026");
+    await pyodide.runPythonAsync(`
+import micropip
+await micropip.install("jinja2")
+`);
+    setStatus("Setting up Python environment\u2026");
+    // Write source files to Pyodide VFS
+    pyodide.FS.writeFile("/home/pyodide/exam_core.py", EXAM_CORE_SOURCE);
+    try { pyodide.FS.mkdir("/home/pyodide/questions"); } catch {}
+    pyodide.FS.writeFile("/home/pyodide/questions/__init__.py", INIT_PY_SOURCE);
+    await pyodide.runPythonAsync(`
+import sys
+if "/home/pyodide" not in sys.path:
+    sys.path.insert(0, "/home/pyodide")
+import exam_core
+import questions
+`);
+    pyodideReady = true;
+    hideOverlay();
+    toast("Python ready \u2713", "success");
+    document.getElementById("btn-render-all").disabled = false;
+    document.getElementById("btn-preview").disabled = false;
+  } catch (e) {
+    setStatus("\u26a0 Error: " + e.message);
+    document.getElementById("loading-status").style.color = "#ff9090";
+    console.error("Pyodide init failed:", e);
+  }
+}
+
+function setStatus(msg) {
+  const el = document.getElementById("loading-status");
+  if (el) el.textContent = msg;
+}
+
+function hideOverlay() {
+  const ov = document.getElementById("loading-overlay");
+  if (ov) {
+    ov.classList.add("hidden");
+    setTimeout(() => { ov.style.display = "none"; }, 450);
+  }
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  const list = document.getElementById("question-list");
+  list.innerHTML = "";
+  for (const qid of state.questionOrder) {
+    const q = state.questions[qid];
+    if (!q) continue;
+    list.appendChild(makeSidebarItem(q));
+  }
+}
+
+function makeSidebarItem(q) {
+  const div = document.createElement("div");
+  div.className = "sidebar-item" +
+    (q.id === state.selectedQuestion ? " selected" : "") +
+    (q.enabled === false ? " disabled-q" : "");
+  div.dataset.id = q.id;
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = q.enabled !== false;
+  cb.title = "Include in exam";
+  cb.addEventListener("click", e => {
+    e.stopPropagation();
+    state.questions[q.id].enabled = cb.checked;
+    div.classList.toggle("disabled-q", !cb.checked);
+    debounceSave();
+  });
+
+  const name = document.createElement("span");
+  name.className = "q-name"; name.textContent = q.title || q.id; name.title = q.id;
+
+  const stars = document.createElement("span");
+  stars.className = "q-stars"; stars.textContent = STARS[q.difficulty] || "\u2605\u2605";
+
+  const del = document.createElement("button");
+  del.className = "q-delete"; del.title = "Delete question"; del.textContent = "\ud83d\uddd1";
+  del.addEventListener("click", e => { e.stopPropagation(); doDeleteQuestion(q.id); });
+
+  div.append(cb, name, stars, del);
+  div.addEventListener("click", () => selectQuestion(q.id));
+  return div;
+}
+
+function setupSortable() {
+  Sortable.create(document.getElementById("question-list"), {
+    animation: 150, ghostClass: "sortable-ghost",
+    onEnd({ oldIndex, newIndex }) {
+      if (oldIndex === newIndex) return;
+      const [moved] = state.questionOrder.splice(oldIndex, 1);
+      state.questionOrder.splice(newIndex, 0, moved);
+      debounceSave();
+    },
+  });
+}
+
+// ── Question selection ─────────────────────────────────────────────────────
+function selectQuestion(qid) {
+  state.selectedQuestion = qid;
+  document.querySelectorAll(".sidebar-item").forEach(el => {
+    el.classList.toggle("selected", el.dataset.id === qid);
+  });
+  const q = state.questions[qid];
+  if (!q) return;
+
+  document.getElementById("no-q-msg").style.display = "none";
+  const panels = document.getElementById("editor-panels");
+  panels.style.display = "flex";
+
+  if (templateEditor) {
+    templateEditor.dispatch({
+      changes: { from: 0, to: templateEditor.state.doc.length, insert: q.template || "" }
+    });
+  }
+  if (pythonEditor) {
+    pythonEditor.dispatch({
+      changes: { from: 0, to: pythonEditor.state.doc.length, insert: q.python_code || "" }
+    });
+  }
+
+  document.getElementById("preview-content").innerHTML =
+    '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
+  updatePreviewSeedLabel();
+  debounceSave();
+}
+
+function updatePreviewSeedLabel() {
+  const lbl = document.getElementById("preview-seed-label");
+  if (lbl) lbl.textContent = `seed: A=${state.settings.seedA}`;
+}
+
+function showNoQuestion() {
+  document.getElementById("no-q-msg").style.display = "flex";
+  document.getElementById("editor-panels").style.display = "none";
+}
+
+// ── Question CRUD ──────────────────────────────────────────────────────────
+function doDeleteQuestion(qid) {
+  if (!confirm(`Delete "${qid}"?`)) return;
+  delete state.questions[qid];
+  state.questionOrder = state.questionOrder.filter(id => id !== qid);
+  if (state.selectedQuestion === qid) {
+    state.selectedQuestion = state.questionOrder[0] || null;
+  }
+  renderSidebar();
+  if (state.selectedQuestion) selectQuestion(state.selectedQuestion);
+  else showNoQuestion();
+  saveState();
+}
+
+function doNewQuestion() {
+  const num = String(Date.now()).slice(-6);
+  const qid = `q_new_${num}`;
+  state.questions[qid] = {
+    id: qid, title: qid, topic: "", difficulty: 2, enabled: true,
+    template: "{{ question }}\n",
+    python_code:
+`import numpy as np
+from questions import make_choices, render_template
+
+def generate(rng: np.random.Generator) -> dict:
+    question = "New question text here."
+    choices = ["Correct answer", "Distractor 1", "Distractor 2", "Distractor 3", "Distractor 4"]
+    return {
+        "question": question,
+        "choices": choices,
+        "answer": "a",
+        "topic": "New Topic",
+        "difficulty": 2,
+    }
+`,
+  };
+  state.questionOrder.push(qid);
+  renderSidebar();
+  selectQuestion(qid);
+  saveState();
+  document.getElementById("question-list").lastElementChild?.scrollIntoView({ behavior: "smooth" });
+}
+
+// ── Preview ────────────────────────────────────────────────────────────────
+async function doPreview() {
+  if (!pyodideReady) { toast("Pyodide still loading\u2026", "error"); return; }
+  const qid = state.selectedQuestion;
+  if (!qid) return;
+  const q = state.questions[qid];
+  if (!q) return;
+
+  const templateStr = templateEditor ? templateEditor.state.doc.toString() : (q.template || "");
+  const pythonCode  = pythonEditor  ? pythonEditor.state.doc.toString()  : (q.python_code || "");
+  const seed = state.settings.seedA;
+
+  document.getElementById("preview-content").innerHTML =
+    '<p style="color:#888;font-style:italic">Running\u2026</p>';
+
+  try {
+    pyodide.globals.set("_tpl_str",  templateStr);
+    pyodide.globals.set("_py_code",  pythonCode);
+    pyodide.globals.set("_qid",      qid);
+    pyodide.globals.set("_seed",     seed);
+
+    const resultJson = await pyodide.runPythonAsync(`
+import jinja2 as _j2, questions as _qmod, numpy as np, json
+
+_tpl = _j2.Environment(
+    trim_blocks=True, lstrip_blocks=True,
+    keep_trailing_newline=False,
+    undefined=_j2.StrictUndefined,
+).from_string(_tpl_str)
+
+def _rt(name, params): return _tpl.render(**params).strip()
+_qmod.render_template = _rt
+
+_ns = {}
+exec(compile(_py_code, _qid + ".py", "exec"), _ns)
+_rng = np.random.default_rng(int(_seed))
+_d = _ns["generate"](_rng)
+json.dumps({
+    "question": _d["question"],
+    "choices":  list(_d["choices"]),
+    "answer":   _d["answer"],
+    "topic":    _d.get("topic", ""),
+    "difficulty": int(_d.get("difficulty", 2)),
+})
+`);
+    renderPreview(JSON.parse(resultJson));
+  } catch (e) {
+    document.getElementById("preview-content").innerHTML =
+      `<div class="error-box">${escHtml(e.message || String(e))}</div>`;
+  }
+}
+
+function renderPreview(data) {
+  let md = data.question + "\n\n";
+  for (let i = 0; i < 5; i++) {
+    md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
+  }
+  const html = marked.parse(md);
+  const answerText = data.choices[LETTERS.indexOf(data.answer)] || "";
+  const topicHtml = data.topic ? ` &nbsp;|&nbsp; ${escHtml(data.topic)}` : "";
+  const diffHtml  = ` &nbsp;|&nbsp; ${STARS[data.difficulty] || "\u2605\u2605"}`;
+  document.getElementById("preview-content").innerHTML =
+    `<div>${html}</div>` +
+    `<div class="preview-answer">\u2713 Correct: <strong>(${data.answer})</strong> ${escHtml(answerText)}${topicHtml}${diffHtml}</div>`;
+  if (window.MathJax?.typesetPromise) {
+    MathJax.typesetPromise([document.getElementById("preview-content")]).catch(console.error);
+  }
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ── Render All ─────────────────────────────────────────────────────────────
+async function doRenderAll() {
+  if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
+  const enabledOrder = state.questionOrder.filter(id => state.questions[id]?.enabled !== false);
+  if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
+  if (enabledOrder.length % 5 !== 0) {
+    if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
+  }
+  const papers = (state.settings.papers || ["A"]);
+  if (papers.length === 0) { toast("No papers selected!", "error"); return; }
+
+  const enabledBank = {};
+  for (const id of enabledOrder) enabledBank[id] = state.questions[id];
+  const meta = { ...state.settings, numQuestions: enabledOrder.length };
+
+  setProgress(0);
+  const zip = new JSZip();
+  const btn = document.getElementById("btn-render-all");
+  btn.disabled = true; btn.textContent = "\u23f3 Rendering\u2026";
+
+  try {
+    for (let pi = 0; pi < papers.length; pi++) {
+      const paper = papers[pi];
+      const seedKey = `seed${paper}`;
+      const seed = state.settings[seedKey] ?? (42 + pi * 95);
+      toast(`Rendering Paper ${paper}\u2026`, "");
+
+      pyodide.globals.set("_bank_json",  JSON.stringify(enabledBank));
+      pyodide.globals.set("_order_json", JSON.stringify(enabledOrder));
+      pyodide.globals.set("_meta_json",  JSON.stringify({ ...meta, paper }));
+      pyodide.globals.set("_seed_int",   seed);
+
+      const rJson = await pyodide.runPythonAsync(`
+import json, exam_core, importlib
+importlib.reload(exam_core)
+_bank  = json.loads(_bank_json)
+_order = json.loads(_order_json)
+_meta  = json.loads(_meta_json)
+_md, _ans = exam_core.render_paper(_bank, _order, _meta, int(_seed_int))
+json.dumps({"md": _md, "answers": _ans})
+`);
+      const { md, answers } = JSON.parse(rJson);
+      zip.file(`exam_${paper}.md`, md);
+      const ansLines = answers.map((a, i) => `Q${String(i+1).padStart(2,"0")}: ${a}`).join("\n");
+      zip.file(`answers_${paper}.txt`, `Paper ${paper} (seed=${seed})\n\n${ansLines}\n`);
+      setProgress((pi + 1) / papers.length * 100);
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveAs(blob, "exam_papers.zip");
+    toast("Export complete \u2713", "success");
+  } catch (e) {
+    toast("Error: " + (e.message || e), "error");
+    console.error(e);
+  } finally {
+    setProgress(0); btn.disabled = false; btn.textContent = "\u25b6 Render All";
+  }
+}
+
+// ── Export ZIP (Python project) ────────────────────────────────────────────
+async function doExportZip() {
+  const zip = new JSZip();
+  const qDir = zip.folder("questions");
+  qDir.file("__init__.py", INIT_PY_SOURCE);
+  zip.file("render.py", RENDER_PY_SOURCE);
+  zip.folder("templates").file("exam_header.md.j2", EXAM_HEADER_J2);
+  zip.file("requirements.txt", "numpy\njinja2\n");
+  for (const qid of state.questionOrder) {
+    const q = state.questions[qid]; if (!q) continue;
+    qDir.file(`${qid}.py`, q.python_code || "");
+    qDir.file(`${qid}.j2`, q.template || "");
+  }
+  const blob = await zip.generateAsync({ type: "blob" });
+  saveAs(blob, "question_forge_project.zip");
+  toast("Project ZIP exported \u2713", "success");
+}
+
+// ── Import ZIP ─────────────────────────────────────────────────────────────
+async function doImportZip() {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = ".zip";
+  input.onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const pyFiles = {}, j2Files = {};
+      zip.forEach((path, entry) => {
+        if (!entry.dir && path.startsWith("questions/") && path.endsWith(".py") && !path.includes("__init__")) {
+          pyFiles[path.replace("questions/","").replace(".py","")] = entry;
+        }
+        if (!entry.dir && path.startsWith("questions/") && path.endsWith(".j2")) {
+          j2Files[path.replace("questions/","").replace(".j2","")] = entry;
+        }
+      });
+      let n = 0;
+      for (const stem of Object.keys(pyFiles)) {
+        const pyCode  = await pyFiles[stem].async("string");
+        const template = j2Files[stem] ? await j2Files[stem].async("string") : "";
+        if (!state.questions[stem]) state.questionOrder.push(stem);
+        state.questions[stem] = {
+          id: stem, title: stem, topic: "", difficulty: 2, enabled: true,
+          ...(state.questions[stem] || {}),
+          python_code: pyCode, template,
+        };
+        n++;
+      }
+      renderSidebar(); saveState();
+      toast(`Imported ${n} question${n !== 1 ? "s" : ""} \u2713`, "success");
+    } catch (e) { toast("Import failed: " + e.message, "error"); console.error(e); }
+  };
+  input.click();
+}
+
+// ── Settings binding ───────────────────────────────────────────────────────
+function bindSettings() {
+  [
+    ["setting-course",   "course",   false],
+    ["setting-date",     "date",     false],
+    ["setting-duration", "duration", false],
+    ["setting-seed-a",   "seedA",    true],
+    ["setting-seed-b",   "seedB",    true],
+    ["setting-seed-c",   "seedC",    true],
+  ].forEach(([id, key, isNum]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      state.settings[key] = isNum ? Number(el.value) : el.value;
+      debounceSave();
+      updatePreviewSeedLabel();
+    });
+  });
+  ["A","B","C"].forEach(p => {
+    const cb = document.getElementById(`paper-check-${p}`);
+    if (!cb) return;
+    cb.addEventListener("change", () => {
+      if (cb.checked) { if (!state.settings.papers.includes(p)) state.settings.papers.push(p); }
+      else state.settings.papers = state.settings.papers.filter(x => x !== p);
+      debounceSave();
+    });
+  });
+}
+
+function applySettingsToUI() {
+  const s = state.settings;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  set("setting-course",   s.course);
+  set("setting-date",     s.date);
+  set("setting-duration", s.duration);
+  set("setting-seed-a",   s.seedA);
+  set("setting-seed-b",   s.seedB);
+  set("setting-seed-c",   s.seedC);
+  ["A","B","C"].forEach(p => {
+    const cb = document.getElementById(`paper-check-${p}`);
+    if (cb) cb.checked = s.papers.includes(p);
+  });
+}
+
+// ── Resizer ────────────────────────────────────────────────────────────────
+function setupResizers() {
+  setupResizer("rsz-1", "ep-template", "ep-python");
+  setupResizer("rsz-2", "ep-python",   "preview-panel");
+}
+
+function setupResizer(rzId, topId, botId) {
+  const rz = document.getElementById(rzId);
+  if (!rz) return;
+  let startY, startTop, startBot;
+  rz.addEventListener("mousedown", e => {
+    startY   = e.clientY;
+    startTop = document.getElementById(topId).offsetHeight;
+    startBot = document.getElementById(botId).offsetHeight;
+    const onMove = ev => {
+      const dy = ev.clientY - startY;
+      const newTop = Math.max(80, startTop + dy);
+      const newBot = Math.max(80, startBot - dy);
+      document.getElementById(topId).style.flex = `0 0 ${newTop}px`;
+      document.getElementById(botId).style.flex = `0 0 ${newBot}px`;
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+}
+
+// ── Progress / toast ───────────────────────────────────────────────────────
+function setProgress(pct) {
+  const el = document.getElementById("progress-bar");
+  if (el) el.style.width = pct + "%";
+}
+
+function toast(msg, type = "") {
+  const el = document.getElementById("toast");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "show" + (type ? " " + type : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = ""; }, 3500);
+}
+
+// ── CodeMirror setup ───────────────────────────────────────────────────────
+function setupEditors() {
+  const makeListener = type => EditorView.updateListener.of(upd => {
+    if (!upd.docChanged || !state.selectedQuestion) return;
+    const q = state.questions[state.selectedQuestion]; if (!q) return;
+    if (type === "template") q.template     = upd.state.doc.toString();
+    else                     q.python_code  = upd.state.doc.toString();
+    debounceSave();
+  });
+
+  const baseTheme = EditorView.theme({
+    "&": { height: "100%", display: "flex", flexDirection: "column" },
+    ".cm-scroller": { overflow: "auto", flex: "1" },
+    ".cm-content": { fontFamily: '"SF Mono", Menlo, Consolas, monospace', fontSize: "12.5px" },
+  });
+
+  templateEditor = new EditorView({
+    state: EditorState.create({ doc: "", extensions: [basicSetup, baseTheme, makeListener("template")] }),
+    parent: document.getElementById("wrap-template"),
+  });
+
+  pythonEditor = new EditorView({
+    state: EditorState.create({ doc: "", extensions: [basicSetup, python(), baseTheme, makeListener("python")] }),
+    parent: document.getElementById("wrap-python"),
+  });
+}
+
+// ── Main init ──────────────────────────────────────────────────────────────
+async function main() {
+  setupEditors();
+  setupResizers();
+  bindSettings();
+
+  // Bind buttons
+  const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
+  on("btn-preview",    doPreview);
+  on("btn-render-all", doRenderAll);
+  on("btn-export-zip", doExportZip);
+  on("btn-import",     doImportZip);
+  on("btn-import-sb",  doImportZip);
+  on("btn-new-q",      doNewQuestion);
+  on("btn-reset", async () => {
+    if (!confirm("Reset to default question bank? All local changes will be lost.")) return;
+    try {
+      const { DEFAULT_BANK } = await import("./src/default_bank.js");
+      state.questionOrder = DEFAULT_BANK.question_order.slice();
+      state.questions = {};
+      for (const [id, q] of Object.entries(DEFAULT_BANK.questions)) {
+        state.questions[id] = { ...q, enabled: true };
+      }
+      state.selectedQuestion = state.questionOrder[0] || null;
+      saveState(); renderSidebar(); applySettingsToUI();
+      if (state.selectedQuestion) selectQuestion(state.selectedQuestion);
+      else showNoQuestion();
+      toast("Reset to default bank \u2713", "success");
+    } catch (e) { toast("Reset failed: " + e.message, "error"); }
+  });
+
+  // Load state
+  const hadState = loadState();
+
+  // Load DEFAULT_BANK if no questions saved
+  if (!hadState || state.questionOrder.length === 0) {
+    try {
+      const { DEFAULT_BANK } = await import("./src/default_bank.js");
+      state.questionOrder = DEFAULT_BANK.question_order.slice();
+      state.questions = {};
+      for (const [id, q] of Object.entries(DEFAULT_BANK.questions)) {
+        state.questions[id] = { ...q, enabled: true };
+      }
+      state.selectedQuestion = state.questionOrder[0] || null;
+      saveState();
+    } catch (e) { console.warn("Could not load DEFAULT_BANK:", e); }
+  }
+
+  applySettingsToUI();
+  renderSidebar();
+  setupSortable();
+
+  if (state.selectedQuestion && state.questions[state.selectedQuestion]) {
+    selectQuestion(state.selectedQuestion);
+  } else if (state.questionOrder.length > 0) {
+    selectQuestion(state.questionOrder[0]);
+  } else {
+    showNoQuestion();
+  }
+
+  // Start Pyodide (background)
+  initPyodide();
+}
+
+main();
+</script>
+</body>
+</html>
