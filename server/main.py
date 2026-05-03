@@ -10,6 +10,17 @@ A lightweight FastAPI server that:
 
 from __future__ import annotations
 
+import sys
+
+# Remove any paths injected via PYTHONPATH that belong to a different Python
+# version (e.g. /opt/local/lib/python3.14t/site-packages leaking into a 3.13
+# venv).  The venv's own site-packages always start with sys.prefix.
+sys.path = [
+    p for p in sys.path
+    if not p or p.startswith(sys.prefix) or p.startswith(sys.base_prefix)
+    or not any(seg.startswith("python3.") and seg != f"python{sys.version_info.major}.{sys.version_info.minor}" for seg in p.split("/"))
+]
+
 import hmac
 import json
 import os
