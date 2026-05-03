@@ -204,7 +204,44 @@
     }
     #btn-chat-send:disabled { opacity: 0.45; cursor: not-allowed; }
 
-    /* AI Connection popover */
+    /* AI diff cards */
+    .ai-diff-card {
+      border: 1px solid #d0d7de; border-radius: 6px; margin: 6px 0;
+      overflow: hidden; font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 11.5px; align-self: stretch;
+    }
+    .ai-diff-card-hdr {
+      background: #1e3a5f; color: white; padding: 5px 10px;
+      display: flex; align-items: center; gap: 6px; font-family: inherit; font-size: 12px;
+    }
+    .ai-diff-body { max-height: 280px; overflow-y: auto; }
+    .diff-line { padding: 0 8px; white-space: pre; line-height: 1.5; }
+    .diff-line.add  { background: #e6ffed; color: #116329; }
+    .diff-line.del  { background: #ffeef0; color: #82071e; }
+    .diff-line.ctx  { color: #636c76; }
+    .diff-line.hunk { background: #dff0ff; color: #0550ae; font-style: italic; font-family: inherit; }
+    .ai-diff-actions {
+      padding: 6px 8px; display: flex; gap: 8px; background: #f6f8fa;
+      border-top: 1px solid #d0d7de;
+    }
+    .btn-diff-accept {
+      background: #1a7f37; color: white; border: none; border-radius: 4px;
+      padding: 4px 14px; cursor: pointer; font-size: 12px; font-weight: 600;
+    }
+    .btn-diff-accept:hover { background: #116329; }
+    .btn-diff-reject {
+      background: #6e7781; color: white; border: none; border-radius: 4px;
+      padding: 4px 14px; cursor: pointer; font-size: 12px;
+    }
+    .btn-diff-reject:hover { background: #57606a; }
+    .ai-diff-resolved {
+      display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+      font-size: 11px; padding: 3px 10px; border-radius: 10px; margin: 4px 0;
+    }
+    .ai-diff-resolved.accepted { background: #dafbe1; color: #116329; border: 1px solid #b7e3c0; }
+    .ai-diff-resolved.rejected { background: #ffebe9; color: #82071e; border: 1px solid #f5c6c9; }
+
+
     #ai-conn-popover {
       display: none; position: fixed; z-index: 8000;
       background: white; border: 1px solid #ccc; border-radius: 6px;
@@ -1963,12 +2000,15 @@ async function doSendChat() {
   aiState.messages.push({ role: "user", content: text });
   appendChatMsg("user", escHtml(text));
 
-  // Create assistant bubble for streaming
-  const aEl = appendChatMsg("assistant", '<span style="color:#aaa">…</span>');
+  // Create assistant bubble for streaming (skip chatLog until stream completes)
+  const aEl = document.createElement("div");
+  aEl.className = "chat-msg assistant";
+  aEl.innerHTML = '<span style="color:#aaa">…</span>';
+  document.getElementById("chat-messages").appendChild(aEl);
+  aEl.scrollIntoView({behavior: "smooth"});
   document.getElementById("btn-chat-send").disabled = true;
 
   let assistantText = "";
-  const toolBadges = [];
 
   try {
     const res = await fetch(aiState.url + "/chat", {
@@ -2011,25 +2051,11 @@ async function doSendChat() {
           aEl.scrollIntoView({ behavior: "smooth" });
 
         } else if (evt.type === "tool_call") {
-          if (evt.tool === "update_template" && templateEditor) {
-            templateEditor.setValue(evt.content);
-            if (state.selectedQuestion) {
-              state.questions[state.selectedQuestion].template = evt.content;
-              renderParamsPanel(state.selectedQuestion);
-              debounceSave();
-            }
-            toolBadges.push("✏ template updated");
-            toast("AI updated template ✓", "success");
-
-          } else if (evt.tool === "update_python" && pythonEditor) {
-            pythonEditor.setValue(evt.content);
-            if (state.selectedQuestion) {
-              state.questions[state.selectedQuestion].python_code = evt.content;
-              debounceSave();
-            }
-            toolBadges.push("✏ python updated");
-            toast("AI updated Python code ✓", "success");
-          }
+          // Snapshot current content for diff
+          const oldContent = evt.tool === "update_template"
+            ? (templateEditor ? templateEditor.getValue() : "")
+            : (pythonEditor   ? pythonEditor.getValue()   : "");
+          showDiffCard(evt.tool, oldContent, evt.content);
 
         } else if (evt.type === "error") {
           throw new Error(evt.message);
@@ -2039,16 +2065,10 @@ async function doSendChat() {
       }
     }
 
-    // Render tool badges into the assistant bubble
-    for (const b of toolBadges) {
-      const span = document.createElement("span");
-      span.className = "chat-tool-badge";
-      span.textContent = b;
-      aEl.appendChild(document.createElement("br"));
-      aEl.appendChild(span);
-    }
-
+    // Log the final assistant bubble to chat history
     aiState.messages.push({ role: "assistant", content: assistantText || "[tool call]" });
+    aiState.chatLog.push({ role: "assistant", html: aEl.innerHTML, toolBadges: [] });
+    saveAIState();
 
   } catch (e) {
     aEl.innerHTML = `<span style="color:#c62828">${escHtml(e.message || String(e))}</span>`;
@@ -2057,6 +2077,103 @@ async function doSendChat() {
     document.getElementById("btn-chat-send").disabled = false;
     input.focus();
   }
+}
+
+// ── Diff utilities ──────────────────────────────────────────────────────────
+function lineDiff(a, b) {
+  const aLines = a === "" ? [] : a.split("\n");
+  const bLines = b === "" ? [] : b.split("\n");
+  const m = aLines.length, n = bLines.length;
+  // O(mn) LCS — fine for typical template/generator sizes
+  const dp = Array.from({length: m + 1}, () => new Uint32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = aLines[i] === bLines[j] ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1]);
+  const result = [];
+  let i = 0, j = 0;
+  while (i < m || j < n) {
+    if (i < m && j < n && aLines[i] === bLines[j]) {
+      result.push({type:"eq",  text: aLines[i]}); i++; j++;
+    } else if (j < n && (i >= m || dp[i+1][j] <= dp[i][j+1])) {
+      result.push({type:"add", text: bLines[j]}); j++;
+    } else {
+      result.push({type:"del", text: aLines[i]}); i++;
+    }
+  }
+  return result;
+}
+
+function renderDiffHtml(diff, ctx = 3) {
+  const changed = diff.map((d,i) => d.type !== "eq" ? i : -1).filter(i => i >= 0);
+  if (!changed.length) return '<div class="diff-line ctx">  (no changes)</div>';
+  const shown = new Set();
+  for (const ci of changed)
+    for (let k = Math.max(0, ci - ctx); k <= Math.min(diff.length - 1, ci + ctx); k++)
+      shown.add(k);
+  let html = "", prev = -1;
+  for (const i of [...shown].sort((a, b) => a - b)) {
+    if (prev !== -1 && i > prev + 1)
+      html += `<div class="diff-line hunk">  @@ skipped ${i - prev - 1} line(s) @@</div>`;
+    const d = diff[i];
+    const prefix = d.type === "add" ? "+" : d.type === "del" ? "-" : " ";
+    const cls    = d.type === "add" ? "add" : d.type === "del" ? "del" : "ctx";
+    html += `<div class="diff-line ${cls}">${prefix} ${escHtml(d.text)}</div>`;
+    prev = i;
+  }
+  return html;
+}
+
+function showDiffCard(tool, oldContent, newContent) {
+  const label = tool === "update_template" ? "Jinja2 template" : "Python generator";
+  const diff    = lineDiff(oldContent, newContent);
+  const diffHtml = renderDiffHtml(diff);
+
+  const card = document.createElement("div");
+  card.className = "ai-diff-card";
+  card.innerHTML = `
+    <div class="ai-diff-card-hdr">📝 Proposed ${escHtml(label)} update</div>
+    <div class="ai-diff-body">${diffHtml}</div>
+    <div class="ai-diff-actions">
+      <button class="btn-diff-accept">✓ Accept</button>
+      <button class="btn-diff-reject">✗ Reject</button>
+    </div>`;
+  document.getElementById("chat-messages").appendChild(card);
+  card.scrollIntoView({behavior: "smooth"});
+
+  function resolve(accepted) {
+    if (accepted) {
+      if (tool === "update_template" && templateEditor) {
+        templateEditor.setValue(newContent);
+        if (state.selectedQuestion) {
+          state.questions[state.selectedQuestion].template = newContent;
+          renderParamsPanel(state.selectedQuestion);
+          debounceSave();
+        }
+      } else if (tool === "update_python" && pythonEditor) {
+        pythonEditor.setValue(newContent);
+        if (state.selectedQuestion) {
+          state.questions[state.selectedQuestion].python_code = newContent;
+          debounceSave();
+        }
+      }
+    }
+    const status   = accepted ? "accepted" : "rejected";
+    const icon     = accepted ? "✓" : "✗";
+    const statusText = `${icon} ${label} update ${status}`;
+    const badge = document.createElement("div");
+    badge.className = `ai-diff-resolved ${status}`;
+    badge.textContent = statusText;
+    card.replaceWith(badge);
+    badge.scrollIntoView({behavior: "smooth"});
+    // Persist the outcome to chat log
+    aiState.chatLog.push({role: "system-note", html: escHtml(statusText), toolBadges: []});
+    saveAIState();
+    if (accepted) toast(`AI ${label} update applied ✓`, "success");
+  }
+
+  card.querySelector(".btn-diff-accept").addEventListener("click", () => resolve(true));
+  card.querySelector(".btn-diff-reject").addEventListener("click", () => resolve(false));
+  return card;
 }
 
 function toggleChatPanel() {
