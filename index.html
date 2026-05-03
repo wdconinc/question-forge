@@ -837,9 +837,8 @@ if __name__ == "__main__":
      Main application (ES module)
      ============================================================ -->
 <script type="module">
-import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
-import { python } from "https://esm.sh/@codemirror/lang-python@6.1.6";
-import { EditorState } from "https://esm.sh/@codemirror/state@6.4.1";
+import { EditorView, basicSetup, EditorState } from "https://esm.sh/codemirror@6.0.1";
+import { python } from "https://esm.sh/@codemirror/lang-python@6.1.6?deps=@codemirror/state@6.4.1,@codemirror/view@6.33.0,@codemirror/language@6.10.2";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const STORAGE_KEY = "questionforge_state";
