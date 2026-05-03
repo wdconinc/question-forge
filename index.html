@@ -214,6 +214,7 @@
       background: #1e3a5f; color: white; padding: 5px 10px;
       display: flex; align-items: center; gap: 6px; font-family: inherit; font-size: 12px;
     }
+    .ai-diff-card-hdr.create { background: #1a7f37; }
     .ai-diff-section-hdr {
       background: #e8edf5; color: #1e3a5f; padding: 2px 8px; font-size: 11px;
       font-weight: 600; font-family: inherit; border-top: 1px solid #d0d7de;
@@ -2064,6 +2065,15 @@ async function doSendChat() {
             if (evt.python_code !== undefined)
               changes.push({ tool: "update_python", label: "Python generator",
                 oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code });
+          } else if (evt.tool === "create_question") {
+            showCreateCard({
+              question_id: evt.question_id,
+              title: evt.title || evt.question_id,
+              topic: evt.topic || "",
+              template: evt.template || "",
+              python_code: evt.python_code || "",
+            });
+            changes = []; // handled by showCreateCard
           }
           // Legacy single-tool events (backward compat)
           else if (evt.tool === "update_template") {
@@ -2203,7 +2213,62 @@ function showDiffCard(changes) {
   return card;
 }
 
-function toggleChatPanel() {
+function showCreateCard(q) {
+  // q: {question_id, title, topic, template, python_code}
+  // Show all-new content as green additions (diff from empty)
+  let bodyHtml = "";
+  for (const [label, content] of [["Jinja2 template", q.template], ["Python generator", q.python_code]]) {
+    const diff = lineDiff("", content);
+    bodyHtml += `<div class="ai-diff-section-hdr">📄 ${escHtml(label)}</div>`;
+    bodyHtml += renderDiffHtml(diff);
+  }
+
+  const card = document.createElement("div");
+  card.className = "ai-diff-card";
+  card.innerHTML = `
+    <div class="ai-diff-card-hdr create">✨ New question: ${escHtml(q.title)} (${escHtml(q.question_id)})</div>
+    <div class="ai-diff-body">${bodyHtml}</div>
+    <div class="ai-diff-actions">
+      <button class="btn-diff-accept">✓ Accept &amp; Add</button>
+      <button class="btn-diff-reject">✗ Reject</button>
+    </div>`;
+  document.getElementById("chat-messages").appendChild(card);
+  card.scrollIntoView({behavior: "smooth"});
+
+  function resolve(accepted) {
+    if (accepted) {
+      // Build a unique question_id
+      let qid = q.question_id.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^(?!\w)/, "q_");
+      if (state.questions[qid]) qid = qid + "_" + String(Date.now()).slice(-4);
+      state.questions[qid] = {
+        id: qid, title: q.title, topic: q.topic, difficulty: 2, enabled: true,
+        template: q.template, python_code: q.python_code,
+      };
+      state.questionOrder.push(qid);
+      renderSidebar();
+      selectQuestion(qid);
+      saveState();
+      document.getElementById("question-list").lastElementChild?.scrollIntoView({behavior: "smooth"});
+    }
+    const status = accepted ? "accepted" : "rejected";
+    const icon   = accepted ? "✓" : "✗";
+    const statusText = `${icon} New question "${q.title}" ${status}`;
+    const badge = document.createElement("div");
+    badge.className = `ai-diff-resolved ${status}`;
+    badge.textContent = statusText;
+    card.replaceWith(badge);
+    badge.scrollIntoView({behavior: "smooth"});
+    aiState.chatLog.push({role: "system-note", html: escHtml(statusText), toolBadges: []});
+    saveAIState();
+    if (accepted) toast(`New question added ✓`, "success");
+  }
+
+  card.querySelector(".btn-diff-accept").addEventListener("click", () => resolve(true));
+  card.querySelector(".btn-diff-reject").addEventListener("click", () => resolve(false));
+  return card;
+}
+
+
   const panel = document.getElementById("chat-panel");
   const rzChat = document.getElementById("rsz-chat");
   const isOpen = panel.classList.toggle("open");

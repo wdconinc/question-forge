@@ -110,6 +110,43 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_question",
+            "description": (
+                "Create a brand-new parametrized multiple-choice question and add it to the exam. "
+                "Use this when the user asks to create, add, or write a new question. "
+                "The question_id must be a short snake_case identifier, e.g. 'q_friction_ramp'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question_id": {
+                        "type": "string",
+                        "description": "Short snake_case identifier for the new question, e.g. 'q_projectile_angle'.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Human-readable display title for the question.",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "Physics topic, e.g. 'Kinematics', 'Thermodynamics'.",
+                    },
+                    "template": {
+                        "type": "string",
+                        "description": "The complete Jinja2 template for the question.",
+                    },
+                    "python_code": {
+                        "type": "string",
+                        "description": "The complete Python generator code defining generate(rng) -> dict.",
+                    },
+                },
+                "required": ["question_id", "title", "template", "python_code"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -138,6 +175,8 @@ Guidelines:
   Parameters are passed as keyword arguments by `render_template(qid, params)`.
 - When asked to modify code or template, use the update_question tool.
   You may update both template and python_code in a single call when both need changing.
+- When asked to create a new question, use the create_question tool with a complete
+  template and python_code.
 - Otherwise reply in plain text (Markdown is fine).
 """
 
@@ -204,6 +243,12 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     payload["template"] = args["template"]
                 if "python_code" in args:
                     payload["python_code"] = args["python_code"]
+                if "question_id" in args:
+                    payload["question_id"] = args["question_id"]
+                if "title" in args:
+                    payload["title"] = args["title"]
+                if "topic" in args:
+                    payload["topic"] = args.get("topic", "")
                 # Legacy single-content tools (if ever called)
                 if "content" in args:
                     payload["content"] = args["content"]
