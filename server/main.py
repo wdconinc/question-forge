@@ -79,6 +79,8 @@ class ChatRequest(BaseModel):
     template: str = ""
     python_code: str = ""
     question_id: str = ""
+    system_prompt: str = ""       # optional override for the base system prompt
+    question_set_prompt: str = "" # optional per-exam context appended to system prompt
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -153,19 +155,10 @@ TOOLS = [
 # System prompt builder
 # ---------------------------------------------------------------------------
 
-def _system_prompt(req: ChatRequest) -> str:
-    qid = req.question_id or "(unknown)"
-    return f"""You are an expert physics exam question author helping edit a parametrized \
+DEFAULT_SYSTEM_PROMPT = """\
+You are an expert physics exam question author helping edit a parametrized \
 multiple-choice question for an algebra-based introductory physics course \
 (OpenStax College Physics 2e).
-
-Current question ID: {qid}
-
-=== JINJA2 TEMPLATE ===
-{req.template or "(empty)"}
-
-=== PYTHON GENERATOR ===
-{req.python_code or "(empty)"}
 
 Guidelines:
 - The Python generator must define a `generate(rng)` function that returns a dict with
@@ -177,8 +170,28 @@ Guidelines:
   You may update both template and python_code in a single call when both need changing.
 - When asked to create a new question, use the create_question tool with a complete
   template and python_code.
-- Otherwise reply in plain text (Markdown is fine).
+- Otherwise reply in plain text (Markdown is fine).\
 """
+
+def _system_prompt(req: ChatRequest) -> str:
+    qid = req.question_id or "(unknown)"
+    base = req.system_prompt.strip() if req.system_prompt.strip() else DEFAULT_SYSTEM_PROMPT
+    prompt = f"""{base}
+
+Current question ID: {qid}
+
+=== JINJA2 TEMPLATE ===
+{req.template or "(empty)"}
+
+=== PYTHON GENERATOR ===
+{req.python_code or "(empty)"}
+"""
+    if req.question_set_prompt.strip():
+        prompt += f"""
+=== QUESTION SET CONTEXT ===
+{req.question_set_prompt.strip()}
+"""
+    return prompt
 
 # ---------------------------------------------------------------------------
 # /health  (unauthenticated)
