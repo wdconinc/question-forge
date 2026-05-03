@@ -229,7 +229,7 @@ async def test_stream() -> EventSourceResponse:
         await asyncio.sleep(0.1)
         yield {"data": json.dumps({"type": "done"})}
 
-    return EventSourceResponse(_fixed())
+    return EventSourceResponse(_fixed(), ping=0)
 
 # ---------------------------------------------------------------------------
 # /chat  (SSE streaming)
@@ -346,7 +346,7 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
             print(f"[chat] exception: {exc}", flush=True)
             yield {"data": json.dumps({"type": "error", "message": str(exc)})}
 
-    return EventSourceResponse(_stream())
+    return EventSourceResponse(_stream(), ping=0)
 
 
 
