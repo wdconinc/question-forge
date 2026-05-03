@@ -2160,6 +2160,7 @@ async function doTestStream() {
 }
 
 
+async function doSendChat() {
   const input = document.getElementById("chat-input");
   const text = input.value.trim();
   if (!text || !aiState.connected) return;
