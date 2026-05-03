@@ -62,22 +62,21 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Auth rate limiter
+# Auth rate limiter (global)
 # ---------------------------------------------------------------------------
-# After a failed authentication attempt, the originating IP is held off for
-# AUTH_HOLDOFF_SECS seconds.  This limits brute-force to ~6 guesses/min,
-# making even a short alphanumeric token effectively uncrackable:
-#   2-word passphrase (170k² ≈ 29B) → ~4,600 years at 1 attempt/10s
-#   8-char alphanum (36⁸ ≈ 2.8T)    → ~890,000 years
+# After any failed authentication attempt, ALL subsequent attempts are held
+# off for AUTH_HOLDOFF_SECS seconds.  IP-based limiting is not used because
+# IP spoofing trivially bypasses it; a global limit is simpler and equally
+# effective against dictionary attacks.  DoS risk (legitimate users briefly
+# locked out by an attacker) is accepted.
 
 AUTH_HOLDOFF_SECS: float = float(os.environ.get("AUTH_HOLDOFF_SECS", "10"))
 
-# ip -> timestamp of last failed attempt (cleaned up on success)
-_auth_failures: dict[str, float] = {}
+_last_auth_failure: float = 0.0   # monotonic timestamp of most recent failure
 
 
 def _get_client_ip(request: Request) -> str:
-    """Best-effort client IP, respecting Fly.io's X-Forwarded-For header."""
+    """Best-effort client IP for logging only."""
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -85,39 +84,33 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _check_token(request: Request) -> None:
-    """Raise 401/429 if authentication fails or the IP is in cooldown."""
+    """Raise 401/429 if authentication fails or the server is in cooldown."""
+    global _last_auth_failure
+
     if not API_TOKEN:
         raise HTTPException(status_code=500, detail="Server has no API_TOKEN configured.")
 
-    ip = _get_client_ip(request)
-
-    # Reject immediately if the IP is still in cooldown from a previous failure
-    last_fail = _auth_failures.get(ip)
-    if last_fail is not None:
-        elapsed = time.monotonic() - last_fail
-        if elapsed < AUTH_HOLDOFF_SECS:
-            retry_after = int(AUTH_HOLDOFF_SECS - elapsed) + 1
-            print(f"[auth] rate-limited {ip} (retry in {retry_after}s)", flush=True)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Too many failed attempts. Retry after {retry_after}s.",
-                headers={"Retry-After": str(retry_after)},
-            )
-        # Holdoff expired — clear the entry
-        del _auth_failures[ip]
+    # Global cooldown after any recent failure
+    elapsed = time.monotonic() - _last_auth_failure
+    if elapsed < AUTH_HOLDOFF_SECS:
+        retry_after = int(AUTH_HOLDOFF_SECS - elapsed) + 1
+        print(f"[auth] global rate-limit active (retry in {retry_after}s)", flush=True)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Retry after {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        _auth_failures[ip] = time.monotonic()
+        _last_auth_failure = time.monotonic()
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     provided = auth[len("Bearer "):]
     if not hmac.compare_digest(provided.encode(), API_TOKEN.encode()):
-        _auth_failures[ip] = time.monotonic()
+        _last_auth_failure = time.monotonic()
+        ip = _get_client_ip(request)
         print(f"[auth] failed attempt from {ip}", flush=True)
         raise HTTPException(status_code=401, detail="Invalid token.")
-
-    # Successful auth — clear any stale failure record
-    _auth_failures.pop(ip, None)
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
