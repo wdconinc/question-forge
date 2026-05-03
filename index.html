@@ -2008,29 +2008,71 @@ function clearChatLog() {
   container.innerHTML = `<div class="chat-msg system-note">Chat history cleared.</div>`;
 }
 
+function _classifyConnError(e, status, detail) {
+  if (e) {
+    const msg = e.message || "";
+    if (e.name === "TimeoutError" || msg.toLowerCase().includes("timeout"))
+      return "Connection timed out — server may be cold-starting, try again in a moment";
+    if (msg.toLowerCase().includes("cors") || msg.toLowerCase().includes("blocked"))
+      return "CORS error — server must allow this origin";
+    // "Failed to fetch" / "NetworkError" are browser's generic network/CORS errors
+    if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("networkerror"))
+      return "Cannot reach server — verify the URL and that the server is running (also check browser console for CORS details)";
+    return msg || "Network error";
+  }
+  const d = detail ? `: ${detail}` : "";
+  if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})${d} — check your token`;
+  if (status === 404) return `Not found (HTTP 404) — is the server URL correct?`;
+  if (status === 500) return `Server error (HTTP 500)${d} — check server logs`;
+  if (status >= 500) return `Server error (HTTP ${status})${d}`;
+  return `HTTP ${status}${d}`;
+}
+
 async function doAIConnect(silent = false) {
   const url   = document.getElementById("ai-server-url").value.trim().replace(/\/$/, "");
   const token = document.getElementById("ai-token").value.trim();
   const statusEl = document.getElementById("ai-conn-status");
-  if (!silent) statusEl.textContent = "Testing connection…";
+  statusEl.textContent = "Testing connection…";
+  statusEl.style.color = "";
   try {
-    const res = await fetch(url + "/health");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let res;
+    try {
+      res = await fetch(url + "/health", { signal: AbortSignal.timeout(10000) });
+    } catch (netErr) {
+      const msg = _classifyConnError(netErr);
+      statusEl.textContent = "✗ " + msg;
+      statusEl.style.color = "#c62828";
+      setAIDot("error");
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      return;
+    }
+    if (!res.ok) {
+      let detail = "";
+      try { const d = await res.json(); detail = d.detail || ""; } catch {}
+      const msg = _classifyConnError(null, res.status, detail);
+      statusEl.textContent = "✗ " + msg;
+      statusEl.style.color = "#c62828";
+      setAIDot("error");
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      return;
+    }
     const data = await res.json();
     aiState.url = url; aiState.token = token; aiState.connected = true;
     saveAIState();
-    statusEl.textContent = `✓ Connected (model: ${data.model || "?"})`;
+    statusEl.textContent = `✓ Connected · model: ${data.model || "?"}`;
+    statusEl.style.color = "#4caf50";
     setAIDot("connected");
     document.getElementById("chat-input").disabled  = false;
     document.getElementById("btn-chat-send").disabled = false;
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
-    if (!silent) appendChatMsg("system-note", `Connected to ${url}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
   } catch (e) {
-    if (!silent) {
-      statusEl.textContent = "✗ " + (e.message || "Connection failed");
-      setAIDot("error");
-    }
+    const msg = e.message || "Connection failed";
+    statusEl.textContent = "✗ " + msg;
+    statusEl.style.color = "#c62828";
+    setAIDot("error");
+    if (!silent) appendChatMsg("system-note", `⚠ ${msg}`);
   }
 }
 
@@ -2064,10 +2106,12 @@ function startHealthCheck() {
         // Server came back — silently reconnect
         doAIConnect(true);
       }
-    } catch {
+    } catch (e) {
       if (aiState.connected) {
+        const msg = _classifyConnError(e instanceof TypeError ? e : null,
+                                       e.message?.match(/HTTP (\d+)/)?.[1]);
         markAIDisconnected("Server unreachable.");
-        appendChatMsg("system-note", "⚠ Server unreachable — connection lost.");
+        appendChatMsg("system-note", `⚠ Lost connection: ${msg}`);
       }
     }
   }, 15000);
@@ -2113,8 +2157,9 @@ async function doSendChat() {
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`HTTP ${res.status}: ${err}`);
+      let detail = "";
+      try { const d = await res.json(); detail = d.detail || ""; } catch { detail = await res.text().catch(() => ""); }
+      throw new Error(_classifyConnError(null, res.status, detail));
     }
 
     const reader = res.body.getReader();
@@ -2183,10 +2228,11 @@ async function doSendChat() {
     saveAIState();
 
   } catch (e) {
-    aEl.innerHTML = `<span style="color:#c62828">${escHtml(e.message || String(e))}</span>`;
-    // Network failure → mark disconnected so the user knows to reconnect
-    if (e instanceof TypeError || (e.message && e.message.includes("fetch"))) {
-      markAIDisconnected("Server unreachable.");
+    const isNetwork = e instanceof TypeError || e.name === "TimeoutError";
+    const friendlyMsg = isNetwork ? _classifyConnError(e) : (e.message || String(e));
+    aEl.innerHTML = `<span style="color:#c62828">${escHtml(friendlyMsg)}</span>`;
+    if (isNetwork) {
+      markAIDisconnected(_classifyConnError(e));
     } else {
       setAIDot("error");
     }
