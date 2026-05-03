@@ -210,6 +210,27 @@ Current question ID: {qid}
 async def health() -> dict:
     return {"ok": True, "model": GEMINI_MODEL}
 
+
+# ---------------------------------------------------------------------------
+# /test-stream  (unauthenticated, hardcoded SSE for client-side debugging)
+# ---------------------------------------------------------------------------
+
+@app.get("/test-stream")
+async def test_stream() -> EventSourceResponse:
+    """Returns a fixed SSE sequence so the browser SSE reader can be tested
+    without hitting the Gemini API at all."""
+    import asyncio
+
+    async def _fixed() -> AsyncIterator[dict]:
+        await asyncio.sleep(0.1)
+        yield {"data": json.dumps({"type": "text", "delta": "Hello from "})}
+        await asyncio.sleep(0.1)
+        yield {"data": json.dumps({"type": "text", "delta": "test-stream!"})}
+        await asyncio.sleep(0.1)
+        yield {"data": json.dumps({"type": "done"})}
+
+    return EventSourceResponse(_fixed())
+
 # ---------------------------------------------------------------------------
 # /chat  (SSE streaming)
 # ---------------------------------------------------------------------------
@@ -261,16 +282,22 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
     url = f"{GEMINI_BASE}/{GEMINI_MODEL}:streamGenerateContent"
     params = {"key": GOOGLE_API_KEY, "alt": "sse"}
 
+    print(f"[chat] model={GEMINI_MODEL} msgs={len(req.messages)}", flush=True)
+
     async def _stream() -> AsyncIterator[dict]:
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 async with client.stream("POST", url, params=params, json=body) as resp:
+                    print(f"[chat] gemini status={resp.status_code}", flush=True)
                     if resp.status_code != 200:
                         err = await resp.aread()
-                        yield {"data": json.dumps({"type": "error", "message": err.decode()})}
+                        err_text = err.decode()
+                        print(f"[chat] gemini error: {err_text[:500]}", flush=True)
+                        yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
                         return
 
                     function_calls: list[dict] = []
+                    n_text = 0
 
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
@@ -287,9 +314,12 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                             parts = candidate.get("content", {}).get("parts", [])
                             for part in parts:
                                 if "text" in part and part["text"]:
+                                    n_text += 1
                                     yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
                                 if "functionCall" in part:
                                     function_calls.append(part["functionCall"])
+
+            print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
 
             # Emit completed tool calls
             for fc in function_calls:
@@ -313,6 +343,7 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
             yield {"data": json.dumps({"type": "done"})}
 
         except Exception as exc:  # noqa: BLE001
+            print(f"[chat] exception: {exc}", flush=True)
             yield {"data": json.dumps({"type": "error", "message": str(exc)})}
 
     return EventSourceResponse(_stream())

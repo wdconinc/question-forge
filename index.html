@@ -418,6 +418,7 @@
   <div style="display:flex;gap:6px;margin-top:4px">
     <button id="btn-ai-connect" style="flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">Connect</button>
     <button id="btn-ai-disconnect" style="flex:1;padding:5px 10px;background:#ef5350;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;display:none">Disconnect</button>
+    <button id="btn-ai-test-stream" title="Send a fixed SSE test to verify browser streaming works" style="padding:5px 10px;background:#f5f5f5;border:1px solid #bbb;border-radius:4px;cursor:pointer;font-size:11px">Test SSE</button>
     <button id="btn-ai-conn-close" style="padding:5px 10px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:12px">Close</button>
   </div>
   <div id="ai-conn-status" style="margin-top:8px;font-size:11px;color:#888"></div>
@@ -2117,7 +2118,47 @@ function startHealthCheck() {
   }, 15000);
 }
 
-async function doSendChat() {
+// ---------------------------------------------------------------------------
+// Test stream: hits /test-stream to verify client SSE reader independently
+// ---------------------------------------------------------------------------
+async function doTestStream() {
+  const statusEl = document.getElementById("ai-conn-status");
+  const url = document.getElementById("ai-url").value.trim() || aiState.url;
+  statusEl.textContent = "Testing SSE stream…";
+  statusEl.style.color = "#888";
+  try {
+    const res = await fetch(url + "/test-stream", { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) { statusEl.textContent = `✗ test-stream HTTP ${res.status}`; statusEl.style.color="#c62828"; return; }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", text = "", done2 = false;
+    while (!done2) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const s = line.slice(5).trim(); if (!s) continue;
+        let e; try { e = JSON.parse(s); } catch { continue; }
+        if (e.type === "text") text += e.delta;
+        else if (e.type === "done") { done2 = true; break; }
+      }
+    }
+    if (text) {
+      statusEl.textContent = `✓ SSE OK: "${text}"`;
+      statusEl.style.color = "#4caf50";
+    } else {
+      statusEl.textContent = "✗ SSE stream received no text events";
+      statusEl.style.color = "#c62828";
+    }
+  } catch(e) {
+    statusEl.textContent = "✗ test-stream error: " + (e.message || String(e));
+    statusEl.style.color = "#c62828";
+  }
+}
+
+
   const input = document.getElementById("chat-input");
   const text = input.value.trim();
   if (!text || !aiState.connected) return;
@@ -2162,6 +2203,7 @@ async function doSendChat() {
       throw new Error(_classifyConnError(null, res.status, detail));
     }
 
+    console.log("[AI] fetch ok, status:", res.status, "ct:", res.headers.get("content-type"));
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -2169,8 +2211,10 @@ async function doSendChat() {
 
     while (!streamDone) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      if (done) { console.log("[AI] reader done (EOF)"); break; }
+      const chunk = decoder.decode(value, { stream: true });
+      console.log("[AI] chunk:", JSON.stringify(chunk.slice(0, 300)));
+      buf += chunk;
       const lines = buf.split("\n");
       buf = lines.pop();   // keep incomplete line
       for (const line of lines) {
@@ -2179,6 +2223,8 @@ async function doSendChat() {
         if (!jsonStr) continue;
         let evt;
         try { evt = JSON.parse(jsonStr); } catch { continue; }
+
+        console.log("[AI] evt:", evt.type, evt.type === "text" ? evt.delta?.slice(0,40) : "");
 
         try {
           if (evt.type === "text") {
@@ -2512,6 +2558,7 @@ function setupAIChat() {
   on("btn-ai-settings",    showAIConnPopover);
   on("btn-ai-connect",     doAIConnect);
   on("btn-ai-disconnect",  doAIDisconnect);
+  on("btn-ai-test-stream", doTestStream);
   on("btn-ai-conn-close",  () => document.getElementById("ai-conn-popover").classList.remove("open"));
   on("btn-chat-send",      doSendChat);
 
