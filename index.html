@@ -60,7 +60,7 @@
     .paper-check-label input { margin: 0; accent-color: #f0ab00; }
 
     /* Main layout */
-    #main { flex: 1; display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
+    #main { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
 
     /* Editor area */
     #editor-area { display: flex; flex-direction: row; overflow: hidden; flex: 1; }
@@ -155,7 +155,7 @@
     /* AI Chat panel */
     #chat-panel {
       width: 300px; min-width: 200px; max-width: 600px; flex-shrink: 0;
-      display: none; flex-direction: column; overflow: hidden;
+      display: none; flex-direction: column; overflow: hidden; min-height: 0;
       border-left: 1px solid #ddd; background: #f9f9fb;
     }
     #chat-panel.open { display: flex; }
@@ -171,7 +171,7 @@
     #chat-status-dot.connected { background: #4caf50; }
     #chat-status-dot.error { background: #ef5350; }
     #chat-messages {
-      flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+      flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px;
     }
     .chat-msg {
       max-width: 90%; padding: 6px 9px; border-radius: 8px;
