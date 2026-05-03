@@ -106,6 +106,45 @@
     }
     .ep-body .CodeMirror-scroll { min-height: 60px; }
 
+    /* Jinja2 params side panel */
+    #ep-template .ep-body {
+      display: flex; flex-direction: row; position: static;
+    }
+    #wrap-template { flex: 1; position: relative; overflow: hidden; }
+    #template-params-panel {
+      width: 140px; flex-shrink: 0;
+      border-left: 1px solid #ddd;
+      display: flex; flex-direction: column;
+      background: #fafafa; overflow: hidden;
+    }
+    #params-panel-hdr {
+      background: #e9eaed; border-bottom: 1px solid #ddd;
+      padding: 3px 6px; font-size: 11px; font-weight: 600; color: #444;
+      display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+    }
+    #params-panel-hdr span { flex: 1; }
+    #params-panel-hdr button {
+      background: none; border: 1px solid #aaa; border-radius: 3px;
+      font-size: 10px; padding: 1px 5px; cursor: pointer; color: #444;
+    }
+    #params-panel-hdr button:hover { background: #e0e0e0; }
+    #params-list {
+      flex: 1; overflow-y: auto; padding: 4px 3px;
+    }
+    .param-item {
+      display: flex; align-items: center; gap: 3px;
+      padding: 2px 4px; border-radius: 3px; cursor: pointer;
+      font-size: 11px; font-family: "SF Mono", Menlo, Consolas, monospace;
+      color: #1a5276;
+    }
+    .param-item:hover { background: #e8f0ff; }
+    .param-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .param-item .param-rm {
+      color: #bbb; font-size: 12px; line-height: 1; flex-shrink: 0;
+      padding: 0 1px; border-radius: 2px;
+    }
+    .param-item .param-rm:hover { color: #c0392b; background: #fde; }
+
     /* Resizer */
     .resizer { height: 4px; background: #ddd; cursor: ns-resize; flex-shrink: 0; transition: background 0.1s; }
     .resizer:hover { background: #f0ab00; }
@@ -233,7 +272,16 @@
         <div class="ep-hdr">
           <span>🧩 Jinja2 Template</span>
         </div>
-        <div class="ep-body" id="wrap-template"></div>
+        <div class="ep-body">
+          <div id="wrap-template"></div>
+          <div id="template-params-panel">
+            <div id="params-panel-hdr">
+              <span>Params</span>
+              <button id="btn-new-param" title="Add parameter">+ New</button>
+            </div>
+            <div id="params-list"></div>
+          </div>
+        </div>
       </div>
 
       <div class="resizer" id="rsz-1"></div>
@@ -1073,6 +1121,7 @@ function selectQuestion(qid) {
   document.getElementById("preview-content").innerHTML =
     '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
   updatePreviewSeedLabel();
+  renderParamsPanel(qid);
   debounceSave();
 }
 
@@ -1406,6 +1455,76 @@ function toast(msg, type = "") {
   el._t = setTimeout(() => { el.className = ""; }, 3500);
 }
 
+// ── Template params panel ──────────────────────────────────────────────────
+function detectTemplateParams(templateStr) {
+  const found = new Set();
+  // {{ var_name }} — capture first identifier
+  for (const m of (templateStr || "").matchAll(/\{\{[-\s]*([a-zA-Z_][a-zA-Z0-9_]*)/g))
+    found.add(m[1]);
+  // {% if/elif/for var %} — capture identifier after keyword
+  for (const m of (templateStr || "").matchAll(/\{%-?\s*(?:if|elif|for\s+\w+\s+in)\s+([a-zA-Z_][a-zA-Z0-9_]*)/g))
+    found.add(m[1]);
+  // Filter out Jinja2 builtins
+  const builtins = new Set(["loop","true","false","none","not","and","or","is","in","range","namespace"]);
+  return [...found].filter(p => !builtins.has(p)).sort();
+}
+
+function renderParamsPanel(qid) {
+  const list = document.getElementById("params-list");
+  if (!list) return;
+  const q = qid && state.questions[qid];
+  const templateStr = templateEditor ? templateEditor.getValue() : (q?.template || "");
+  const autoParams = new Set(detectTemplateParams(templateStr));
+  const extraParams = q?.extraParams || [];
+  const allParams = [...new Set([...autoParams, ...extraParams])].sort();
+  list.innerHTML = "";
+  if (!allParams.length) {
+    list.innerHTML = '<div style="color:#aaa;font-size:10.5px;padding:4px 6px;font-style:italic">No params detected</div>';
+    return;
+  }
+  for (const p of allParams) {
+    const div = document.createElement("div");
+    div.className = "param-item";
+    div.title = `Insert {{ ${p} }}`;
+    div.innerHTML = `<span>{{ ${escHtml(p)} }}</span><span class="param-rm" title="Remove">×</span>`;
+    div.querySelector("span:first-child").addEventListener("click", () => insertParam(p));
+    div.querySelector(".param-rm").addEventListener("click", e => {
+      e.stopPropagation();
+      removeParam(qid, p);
+    });
+    list.appendChild(div);
+  }
+}
+
+function insertParam(paramName) {
+  if (!templateEditor) return;
+  const doc = templateEditor.getDoc();
+  doc.replaceRange(`{{ ${paramName} }}`, doc.getCursor());
+  templateEditor.focus();
+}
+
+function removeParam(qid, paramName) {
+  const q = qid && state.questions[qid];
+  if (!q) return;
+  if (!q.extraParams) q.extraParams = [];
+  q.extraParams = q.extraParams.filter(p => p !== paramName);
+  renderParamsPanel(qid);
+  debounceSave();
+}
+
+function doNewParam() {
+  const name = prompt("New parameter name (letters, digits, underscore):");
+  if (!name) return;
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) { toast("Invalid parameter name", "error"); return; }
+  const qid = state.selectedQuestion;
+  const q = qid && state.questions[qid];
+  if (!q) return;
+  if (!q.extraParams) q.extraParams = [];
+  if (!q.extraParams.includes(name)) q.extraParams.push(name);
+  renderParamsPanel(qid);
+  debounceSave();
+}
+
 // ── CodeMirror 5 setup ─────────────────────────────────────────────────────
 function setupEditors() {
   templateEditor = CodeMirror(document.getElementById("wrap-template"), {
@@ -1419,6 +1538,7 @@ function setupEditors() {
     if (!state.selectedQuestion) return;
     const q = state.questions[state.selectedQuestion]; if (!q) return;
     q.template = templateEditor.getValue();
+    renderParamsPanel(state.selectedQuestion);
     debounceSave();
   });
 
@@ -1451,6 +1571,7 @@ async function main() {
   on("btn-import",     doImportZip);
   on("btn-import-sb",  doImportZip);
   on("btn-new-q",      doNewQuestion);
+  on("btn-new-param",  doNewParam);
   on("btn-reset", async () => {
     if (!confirm("Reset to default question bank? All local changes will be lost.")) return;
     try {
