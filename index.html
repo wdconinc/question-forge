@@ -2165,8 +2165,9 @@ async function doSendChat() {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let streamDone = false;
 
-    while (true) {
+    while (!streamDone) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
@@ -2179,45 +2180,51 @@ async function doSendChat() {
         let evt;
         try { evt = JSON.parse(jsonStr); } catch { continue; }
 
-        if (evt.type === "text") {
-          assistantText += evt.delta;
-          aEl.innerHTML = marked.parse(assistantText);
-          aEl.scrollIntoView({ behavior: "smooth" });
+        try {
+          if (evt.type === "text") {
+            assistantText += evt.delta;
+            aEl.innerHTML = marked.parse(assistantText);
+            aEl.scrollIntoView({ behavior: "smooth" });
 
-        } else if (evt.type === "tool_call") {
-          let changes = [];
-          // New combined tool
-          if (evt.tool === "update_question") {
-            if (evt.template !== undefined)
+          } else if (evt.type === "tool_call") {
+            let changes = [];
+            if (evt.tool === "update_question") {
+              if (evt.template !== undefined)
+                changes.push({ tool: "update_template", label: "Jinja2 template",
+                  oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template ?? "" });
+              if (evt.python_code !== undefined)
+                changes.push({ tool: "update_python", label: "Python generator",
+                  oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code ?? "" });
+            } else if (evt.tool === "create_question") {
+              showCreateCard({
+                question_id: evt.question_id,
+                title: evt.title || evt.question_id,
+                topic: evt.topic || "",
+                template: evt.template || "",
+                python_code: evt.python_code || "",
+              });
+              changes = [];
+            } else if (evt.tool === "update_template") {
               changes.push({ tool: "update_template", label: "Jinja2 template",
-                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template ?? "" });
-            if (evt.python_code !== undefined)
+                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.content ?? "" });
+            } else if (evt.tool === "update_python") {
               changes.push({ tool: "update_python", label: "Python generator",
-                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code ?? "" });
-          } else if (evt.tool === "create_question") {
-            showCreateCard({
-              question_id: evt.question_id,
-              title: evt.title || evt.question_id,
-              topic: evt.topic || "",
-              template: evt.template || "",
-              python_code: evt.python_code || "",
-            });
-            changes = []; // handled by showCreateCard
-          }
-          // Legacy single-tool events (backward compat)
-          else if (evt.tool === "update_template") {
-            changes.push({ tool: "update_template", label: "Jinja2 template",
-              oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.content ?? "" });
-          } else if (evt.tool === "update_python") {
-            changes.push({ tool: "update_python", label: "Python generator",
-              oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.content ?? "" });
-          }
-          if (changes.length) showDiffCard(changes);
+                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.content ?? "" });
+            }
+            if (changes.length) showDiffCard(changes);
 
-        } else if (evt.type === "error") {
-          throw new Error(evt.message);
-        } else if (evt.type === "done") {
-          break;
+          } else if (evt.type === "error") {
+            throw new Error(evt.message || "Server returned an error");
+
+          } else if (evt.type === "done") {
+            streamDone = true;
+            break;
+          }
+        } catch (evtErr) {
+          // Only re-throw errors (which abort the stream); ignore rendering glitches
+          if (evt && evt.type === "error") throw evtErr;
+          console.error("Error processing SSE event:", evt, evtErr);
+          aEl.innerHTML += `<br><span style="color:#c62828;font-size:11px">${escHtml(evtErr.message)}</span>`;
         }
       }
     }
