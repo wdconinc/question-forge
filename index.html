@@ -62,6 +62,10 @@
     /* Main layout */
     #main { flex: 1; display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
 
+    /* Editor area */
+    #editor-area { display: flex; flex-direction: row; overflow: hidden; flex: 1; }
+    #editor-panels-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
     /* Sidebar */
     #sidebar { overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid #ddd; background: #f4f5f7; }
     #sidebar-header { padding: 6px; background: #e9eaed; border-bottom: 1px solid #ddd; display: flex; gap: 4px; flex-shrink: 0; }
@@ -148,6 +152,75 @@
     /* Resizer */
     .resizer { height: 4px; background: #ddd; cursor: ns-resize; flex-shrink: 0; transition: background 0.1s; }
     .resizer:hover { background: #f0ab00; }
+    .resizer-v { width: 4px; height: auto; cursor: ew-resize; flex-shrink: 0; background: #ddd; transition: background 0.1s; }
+    .resizer-v:hover { background: #f0ab00; }
+
+    /* AI Chat panel */
+    #chat-panel {
+      width: 300px; min-width: 200px; max-width: 600px; flex-shrink: 0;
+      display: none; flex-direction: column; overflow: hidden;
+      border-left: 1px solid #ddd; background: #f9f9fb;
+    }
+    #chat-panel.open { display: flex; }
+    #chat-hdr {
+      background: #1e3a5f; color: white;
+      padding: 5px 10px; font-size: 12px; font-weight: 600;
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    }
+    #chat-hdr span { flex: 1; }
+    #chat-status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #666; flex-shrink: 0;
+    }
+    #chat-status-dot.connected { background: #4caf50; }
+    #chat-status-dot.error { background: #ef5350; }
+    #chat-messages {
+      flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .chat-msg {
+      max-width: 90%; padding: 6px 9px; border-radius: 8px;
+      font-size: 12px; line-height: 1.5; word-break: break-word;
+    }
+    .chat-msg.user { background: #1e3a5f; color: white; align-self: flex-end; border-radius: 8px 8px 2px 8px; }
+    .chat-msg.assistant { background: white; color: #222; border: 1px solid #ddd; align-self: flex-start; border-radius: 8px 8px 8px 2px; }
+    .chat-msg.assistant p { margin: 0 0 4px; }
+    .chat-msg.assistant p:last-child { margin: 0; }
+    .chat-msg.system-note { background: #fff8e1; color: #795548; align-self: center; font-size: 11px; border: 1px solid #ffe082; border-radius: 6px; }
+    .chat-tool-badge {
+      display: inline-block; margin-top: 4px; padding: 2px 7px;
+      background: #e8f5e9; color: #2e7d32; border-radius: 4px;
+      font-size: 10.5px; font-family: "SF Mono", Menlo, Consolas, monospace;
+    }
+    #chat-input-row {
+      padding: 6px 8px; border-top: 1px solid #ddd;
+      display: flex; gap: 5px; align-items: flex-end; flex-shrink: 0;
+    }
+    #chat-input {
+      flex: 1; resize: none; border: 1px solid #ccc; border-radius: 5px;
+      padding: 5px 7px; font-size: 12px; line-height: 1.4; max-height: 100px;
+      font-family: inherit; background: white; color: #222;
+    }
+    #chat-input:focus { outline: none; border-color: #1e3a5f; }
+    #btn-chat-send {
+      padding: 5px 10px; background: #f0ab00; color: #1e3a5f; border: none;
+      border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 700;
+      flex-shrink: 0; align-self: flex-end;
+    }
+    #btn-chat-send:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* AI Connection popover */
+    #ai-conn-popover {
+      display: none; position: fixed; z-index: 8000;
+      background: white; border: 1px solid #ccc; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.18); padding: 14px; width: 280px;
+      font-size: 12px;
+    }
+    #ai-conn-popover.open { display: block; }
+    #ai-conn-popover label { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; color: #444; font-weight: 600; }
+    #ai-conn-popover input[type="text"], #ai-conn-popover input[type="password"] {
+      border: 1px solid #ccc; border-radius: 4px; padding: 4px 7px;
+      font-size: 12px; font-weight: 400; color: #222;
+    }
+    #ai-conn-popover input:focus { outline: none; border-color: #1e3a5f; }
 
     /* Preview */
     #preview-panel { overflow-y: auto; background: white; }
@@ -275,6 +348,25 @@
   <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
   <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
   <button class="btn btn-secondary" id="btn-reset" style="margin-left:auto;font-size:11px;opacity:0.75" title="Reset to default question bank">↺ Reset</button>
+  <div class="tb-sep"></div>
+  <button class="btn btn-secondary" id="btn-toggle-chat" title="Toggle AI chat panel" style="font-size:12px">💬 AI Chat</button>
+</div>
+
+<!-- AI Connection popover -->
+<div id="ai-conn-popover">
+  <div style="font-weight:700;font-size:13px;margin-bottom:10px;color:#1e3a5f">🤖 AI Runner Connection</div>
+  <label>Server URL
+    <input type="text" id="ai-server-url" value="http://localhost:8000" placeholder="http://localhost:8000">
+  </label>
+  <label>Access Token (8 chars)
+    <input type="password" id="ai-token" maxlength="32" placeholder="••••••••" autocomplete="off">
+  </label>
+  <div style="display:flex;gap:6px;margin-top:4px">
+    <button id="btn-ai-connect" style="flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">Connect</button>
+    <button id="btn-ai-disconnect" style="flex:1;padding:5px 10px;background:#ef5350;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;display:none">Disconnect</button>
+    <button id="btn-ai-conn-close" style="padding:5px 10px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:12px">Close</button>
+  </div>
+  <div id="ai-conn-status" style="margin-top:8px;font-size:11px;color:#888"></div>
 </div>
 
 <!-- Main -->
@@ -288,59 +380,84 @@
     <div id="question-list"></div>
   </div>
 
-  <!-- Editor area -->
+  <!-- Editor area (flex row: panels + optional chat panel) -->
   <div id="editor-area">
-    <!-- No question message (shown when nothing is selected) -->
-    <div id="no-q-msg">Select or create a question to start editing.</div>
+    <!-- Left: all editor panels wrapped -->
+    <div id="editor-panels-wrap">
+      <!-- No question message (shown when nothing is selected) -->
+      <div id="no-q-msg">Select or create a question to start editing.</div>
 
-    <!-- Editor panels container (hidden when no question) -->
-    <div id="editor-panels" style="display:none;flex-direction:column;height:100%;overflow:hidden">
+      <!-- Editor panels container (hidden when no question) -->
+      <div id="editor-panels" style="display:none;flex-direction:column;height:100%;overflow:hidden">
 
-      <!-- Jinja2 template editor -->
-      <div class="ep" id="ep-template" style="flex:1;min-height:110px">
-        <div class="ep-hdr">
-          <span>🧩 Jinja2 Template</span>
-        </div>
-        <div class="ep-body">
-          <div id="wrap-template"></div>
-          <div id="template-params-panel">
-            <div id="params-panel-hdr">
-              <span>Params</span>
-              <button id="btn-new-param" title="Add parameter">+ New</button>
+        <!-- Jinja2 template editor -->
+        <div class="ep" id="ep-template" style="flex:1;min-height:110px">
+          <div class="ep-hdr">
+            <span>🧩 Jinja2 Template</span>
+          </div>
+          <div class="ep-body">
+            <div id="wrap-template"></div>
+            <div id="template-params-panel">
+              <div id="params-panel-hdr">
+                <span>Params</span>
+                <button id="btn-new-param" title="Add parameter">+ New</button>
+              </div>
+              <div id="params-list"></div>
             </div>
-            <div id="params-list"></div>
           </div>
         </div>
-      </div>
 
-      <div class="resizer" id="rsz-1"></div>
+        <div class="resizer" id="rsz-1"></div>
 
-      <!-- Python generator editor -->
-      <div class="ep" id="ep-python" style="flex:1;min-height:110px">
-        <div class="ep-hdr">
-          <span>🐍 Python Generator</span>
+        <!-- Python generator editor -->
+        <div class="ep" id="ep-python" style="flex:1;min-height:110px">
+          <div class="ep-hdr">
+            <span>🐍 Python Generator</span>
+          </div>
+          <div class="ep-body" id="wrap-python"></div>
         </div>
-        <div class="ep-body" id="wrap-python"></div>
-      </div>
 
-      <div class="resizer" id="rsz-2"></div>
+        <div class="resizer" id="rsz-2"></div>
 
-      <!-- Preview panel -->
-      <div id="preview-panel" style="flex:1.4;overflow-y:auto;display:flex;flex-direction:column;min-height:100px">
-        <div id="preview-hdr">
-          <span>👁 Preview</span>
-          <button class="btn btn-primary" id="btn-preview" disabled style="font-size:11px;padding:2px 8px">▶ Preview</button>
-          <label style="font-weight:normal;color:#888;font-size:10.5px;display:flex;align-items:center;gap:4px">
-            seed: A=<input id="preview-seed-input" type="number" value="42" min="0" step="1"
-              style="width:56px;font-size:10.5px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background:#fff;color:#333">
-          </label>
+        <!-- Preview panel -->
+        <div id="preview-panel" style="flex:1.4;overflow-y:auto;display:flex;flex-direction:column;min-height:100px">
+          <div id="preview-hdr">
+            <span>👁 Preview</span>
+            <button class="btn btn-primary" id="btn-preview" disabled style="font-size:11px;padding:2px 8px">▶ Preview</button>
+            <label style="font-weight:normal;color:#888;font-size:10.5px;display:flex;align-items:center;gap:4px">
+              seed: A=<input id="preview-seed-input" type="number" value="42" min="0" step="1"
+                style="width:56px;font-size:10.5px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background:#fff;color:#333">
+            </label>
+          </div>
+          <div id="preview-content" style="flex:1;padding:14px 18px;font-size:14px;line-height:1.6">
+            <p style="color:#aaa;font-style:italic">Select a question and click ▶ Preview.</p>
+          </div>
         </div>
-        <div id="preview-content" style="flex:1;padding:14px 18px;font-size:14px;line-height:1.6">
-          <p style="color:#aaa;font-style:italic">Select a question and click ▶ Preview.</p>
-        </div>
-      </div>
 
-    </div><!-- #editor-panels -->
+      </div><!-- #editor-panels -->
+    </div><!-- #editor-panels-wrap -->
+
+    <!-- Vertical resizer for chat panel -->
+    <div class="resizer-v" id="rsz-chat" style="display:none"></div>
+
+    <!-- AI Chat panel -->
+    <div id="chat-panel">
+      <div id="chat-hdr">
+        <div id="chat-status-dot" title="Not connected"></div>
+        <span>🤖 AI Assistant</span>
+        <button id="btn-ai-settings" title="Connection settings"
+          style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:14px;padding:0 2px">⚙</button>
+        <button id="btn-chat-close"
+          style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:16px;padding:0 2px;line-height:1">✕</button>
+      </div>
+      <div id="chat-messages">
+        <div class="chat-msg system-note">Connect to an AI runner server to get started.</div>
+      </div>
+      <div id="chat-input-row">
+        <textarea id="chat-input" rows="2" placeholder="Ask the AI to edit this question…" disabled></textarea>
+        <button id="btn-chat-send" disabled>▶</button>
+      </div>
+    </div><!-- #chat-panel -->
   </div><!-- #editor-area -->
 </div><!-- #main -->
 
@@ -1722,6 +1839,273 @@ async function main() {
 
   // Start Pyodide (background)
   initPyodide();
+  setupAIChat();
+}
+
+// ── AI Chat ────────────────────────────────────────────────────────────────
+const aiState = {
+  connected: false,
+  url: "http://localhost:8000",
+  token: "",
+  messages: [],   // {role, content} conversation history
+};
+
+function loadAIState() {
+  try {
+    const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
+    if (s.url)   aiState.url   = s.url;
+    if (s.token) aiState.token = s.token;
+  } catch {}
+}
+
+function saveAIState() {
+  localStorage.setItem("questionForge_ai", JSON.stringify({ url: aiState.url, token: aiState.token }));
+}
+
+function setAIDot(state) {
+  const dot = document.getElementById("chat-status-dot");
+  if (!dot) return;
+  dot.className = ""; dot.classList.add(state === "connected" ? "connected" : state === "error" ? "error" : "");
+  dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
+}
+
+function appendChatMsg(role, html, toolBadges) {
+  const el = document.createElement("div");
+  el.className = "chat-msg " + role;
+  el.innerHTML = html;
+  if (toolBadges && toolBadges.length) {
+    for (const b of toolBadges) {
+      const span = document.createElement("span");
+      span.className = "chat-tool-badge";
+      span.textContent = b;
+      el.appendChild(document.createElement("br"));
+      el.appendChild(span);
+    }
+  }
+  document.getElementById("chat-messages").appendChild(el);
+  el.scrollIntoView({ behavior: "smooth" });
+  return el;
+}
+
+async function doAIConnect() {
+  const url   = document.getElementById("ai-server-url").value.trim().replace(/\/$/, "");
+  const token = document.getElementById("ai-token").value.trim();
+  const statusEl = document.getElementById("ai-conn-status");
+  statusEl.textContent = "Testing connection…";
+  try {
+    const res = await fetch(url + "/health");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    aiState.url = url; aiState.token = token; aiState.connected = true;
+    saveAIState();
+    statusEl.textContent = `✓ Connected (model: ${data.model || "?"})`;
+    setAIDot("connected");
+    document.getElementById("chat-input").disabled  = false;
+    document.getElementById("btn-chat-send").disabled = false;
+    document.getElementById("btn-ai-connect").style.display = "none";
+    document.getElementById("btn-ai-disconnect").style.display = "";
+    appendChatMsg("system-note", `Connected to ${url}`);
+  } catch (e) {
+    statusEl.textContent = "✗ " + (e.message || "Connection failed");
+    setAIDot("error");
+  }
+}
+
+function doAIDisconnect() {
+  aiState.connected = false; aiState.token = ""; aiState.messages = [];
+  setAIDot("");
+  document.getElementById("chat-input").disabled  = true;
+  document.getElementById("btn-chat-send").disabled = true;
+  document.getElementById("btn-ai-connect").style.display = "";
+  document.getElementById("btn-ai-disconnect").style.display = "none";
+  document.getElementById("ai-conn-status").textContent = "Disconnected.";
+  appendChatMsg("system-note", "Disconnected.");
+}
+
+async function doSendChat() {
+  const input = document.getElementById("chat-input");
+  const text = input.value.trim();
+  if (!text || !aiState.connected) return;
+  input.value = "";
+
+  const qid = state.selectedQuestion || "";
+  const template   = templateEditor ? templateEditor.getValue() : "";
+  const pythonCode = pythonEditor   ? pythonEditor.getValue()   : "";
+
+  // Add user message to history and UI
+  aiState.messages.push({ role: "user", content: text });
+  appendChatMsg("user", escHtml(text));
+
+  // Create assistant bubble for streaming
+  const aEl = appendChatMsg("assistant", '<span style="color:#aaa">…</span>');
+  document.getElementById("btn-chat-send").disabled = true;
+
+  let assistantText = "";
+  const toolBadges = [];
+
+  try {
+    const res = await fetch(aiState.url + "/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + aiState.token,
+      },
+      body: JSON.stringify({
+        messages: aiState.messages,
+        template, python_code: pythonCode, question_id: qid,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`HTTP ${res.status}: ${err}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();   // keep incomplete line
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr) continue;
+        let evt;
+        try { evt = JSON.parse(jsonStr); } catch { continue; }
+
+        if (evt.type === "text") {
+          assistantText += evt.delta;
+          aEl.innerHTML = marked.parse(assistantText);
+          aEl.scrollIntoView({ behavior: "smooth" });
+
+        } else if (evt.type === "tool_call") {
+          if (evt.tool === "update_template" && templateEditor) {
+            templateEditor.setValue(evt.content);
+            if (state.selectedQuestion) {
+              state.questions[state.selectedQuestion].template = evt.content;
+              renderParamsPanel(state.selectedQuestion);
+              debounceSave();
+            }
+            toolBadges.push("✏ template updated");
+            toast("AI updated template ✓", "success");
+
+          } else if (evt.tool === "update_python" && pythonEditor) {
+            pythonEditor.setValue(evt.content);
+            if (state.selectedQuestion) {
+              state.questions[state.selectedQuestion].python_code = evt.content;
+              debounceSave();
+            }
+            toolBadges.push("✏ python updated");
+            toast("AI updated Python code ✓", "success");
+          }
+
+        } else if (evt.type === "error") {
+          throw new Error(evt.message);
+        } else if (evt.type === "done") {
+          break;
+        }
+      }
+    }
+
+    // Render tool badges into the assistant bubble
+    for (const b of toolBadges) {
+      const span = document.createElement("span");
+      span.className = "chat-tool-badge";
+      span.textContent = b;
+      aEl.appendChild(document.createElement("br"));
+      aEl.appendChild(span);
+    }
+
+    aiState.messages.push({ role: "assistant", content: assistantText || "[tool call]" });
+
+  } catch (e) {
+    aEl.innerHTML = `<span style="color:#c62828">${escHtml(e.message || String(e))}</span>`;
+    setAIDot("error");
+  } finally {
+    document.getElementById("btn-chat-send").disabled = false;
+    input.focus();
+  }
+}
+
+function toggleChatPanel() {
+  const panel = document.getElementById("chat-panel");
+  const rzChat = document.getElementById("rsz-chat");
+  const isOpen = panel.classList.toggle("open");
+  rzChat.style.display = isOpen ? "" : "none";
+}
+
+function setupChatResizer() {
+  const rz = document.getElementById("rsz-chat");
+  if (!rz) return;
+  let startX, startW;
+  rz.addEventListener("mousedown", e => {
+    startX = e.clientX;
+    startW = document.getElementById("chat-panel").offsetWidth;
+    const onMove = ev => {
+      const dx = startX - ev.clientX;
+      const newW = Math.max(200, Math.min(700, startW + dx));
+      document.getElementById("chat-panel").style.width = newW + "px";
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+}
+
+function showAIConnPopover() {
+  const btn = document.getElementById("btn-toggle-chat");
+  const pop = document.getElementById("ai-conn-popover");
+  // Position below the toolbar button
+  const rect = (document.getElementById("btn-ai-settings") || btn).getBoundingClientRect();
+  pop.style.top  = (rect.bottom + 6) + "px";
+  pop.style.right = "12px";
+  pop.style.left  = "auto";
+  pop.classList.toggle("open");
+}
+
+function setupAIChat() {
+  loadAIState();
+  // Populate saved values
+  const urlEl = document.getElementById("ai-server-url");
+  const tokEl = document.getElementById("ai-token");
+  if (urlEl) urlEl.value = aiState.url;
+  if (tokEl) tokEl.value = aiState.token;
+
+  const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
+  on("btn-toggle-chat",    toggleChatPanel);
+  on("btn-chat-close",     toggleChatPanel);
+  on("btn-ai-settings",    showAIConnPopover);
+  on("btn-ai-connect",     doAIConnect);
+  on("btn-ai-disconnect",  doAIDisconnect);
+  on("btn-ai-conn-close",  () => document.getElementById("ai-conn-popover").classList.remove("open"));
+  on("btn-chat-send",      doSendChat);
+
+  // Enter key sends (Shift+Enter for newline)
+  document.getElementById("chat-input")?.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSendChat(); }
+  });
+
+  setupChatResizer();
+
+  // Close popover on outside click
+  document.addEventListener("click", e => {
+    const pop = document.getElementById("ai-conn-popover");
+    if (!pop) return;
+    if (!pop.contains(e.target) &&
+        e.target.id !== "btn-ai-settings" &&
+        e.target.id !== "btn-toggle-chat") {
+      pop.classList.remove("open");
+    }
+  });
 }
 
 main();

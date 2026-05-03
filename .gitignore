@@ -16,6 +16,9 @@ venv/
 env/
 ENV/
 
+# Server secrets
+server/.env
+
 # Node
 node_modules/
 
