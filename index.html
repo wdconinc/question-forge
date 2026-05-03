@@ -6,6 +6,7 @@
   <title>QuestionForge — PHYS 1020 Exam Authoring</title>
   <style>
     * { box-sizing: border-box; }
+    :root { --sidebar-width: 240px; }
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -60,15 +61,31 @@
     .paper-check-label input { margin: 0; accent-color: #f0ab00; }
 
     /* Main layout */
-    #main { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
+    #main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--sidebar-width) 1fr; overflow: hidden; transition: grid-template-columns 0.2s ease; }
+    #main.sidebar-collapsed { grid-template-columns: 0 1fr; }
+    #main.sidebar-collapsed #sidebar { border-right: none; }
 
     /* Editor area */
-    #editor-area { display: flex; flex-direction: row; overflow: hidden; flex: 1; }
+    #editor-area { display: flex; flex-direction: row; overflow: hidden; flex: 1; position: relative; }
     #editor-panels-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
     /* Sidebar */
-    #sidebar { overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid #ddd; background: #f4f5f7; }
+    #sidebar { overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid #ddd; background: #f4f5f7; min-width: 0; }
     #sidebar-header { padding: 6px; background: #e9eaed; border-bottom: 1px solid #ddd; display: flex; gap: 4px; flex-shrink: 0; }
+    #btn-collapse-sidebar {
+      background: none; border: 1px solid rgba(0,0,0,0.18); border-radius: 3px;
+      cursor: pointer; font-size: 11px; padding: 1px 5px; color: #555; flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    #btn-collapse-sidebar:hover { background: #d0d3da; }
+    #sidebar-expander {
+      display: none; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+      z-index: 100; background: #e9eaed; border: 1px solid #ddd; border-left: none;
+      border-radius: 0 4px 4px 0; cursor: pointer; padding: 8px 4px;
+      font-size: 12px; color: #555; line-height: 1; transition: background 0.1s;
+    }
+    #sidebar-expander:hover { background: #d0d3da; }
+    #main.sidebar-collapsed #sidebar-expander { display: block; }
     #question-list { flex: 1; overflow-y: auto; padding: 3px; }
     .sidebar-item {
       display: flex; align-items: center; gap: 4px; padding: 5px 5px;
@@ -454,12 +471,15 @@
     <div id="sidebar-header">
       <button class="btn btn-primary" id="btn-new-q" style="flex:1;font-size:11px">+ New</button>
       <button class="btn btn-secondary" id="btn-import-sb" style="font-size:11px" title="Import from ZIP">⬆ Import</button>
+      <button id="btn-collapse-sidebar" title="Hide question list">◀</button>
     </div>
     <div id="question-list"></div>
   </div>
 
   <!-- Editor area (flex row: panels + optional chat panel) -->
   <div id="editor-area">
+    <!-- Expander tab shown when sidebar is collapsed -->
+    <button id="sidebar-expander" title="Show question list">▶</button>
     <!-- Left: all editor panels wrapped -->
     <div id="editor-panels-wrap">
       <!-- No question message (shown when nothing is selected) -->
@@ -2603,6 +2623,12 @@ function setupAIChat() {
   on("btn-ai-test-stream", doTestStream);
   on("btn-ai-conn-close",  () => document.getElementById("ai-conn-popover").classList.remove("open"));
   on("btn-chat-send",      doSendChat);
+
+  function toggleSidebar() {
+    document.getElementById("main").classList.toggle("sidebar-collapsed");
+  }
+  on("btn-collapse-sidebar", toggleSidebar);
+  on("sidebar-expander",     toggleSidebar);
 
   // Enter key sends (Shift+Enter for newline)
   document.getElementById("chat-input")?.addEventListener("keydown", e => {
