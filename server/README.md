@@ -33,6 +33,7 @@ The server starts on `http://localhost:8000` by default.
 | `GOOGLE_API_KEY` | ✅ | — | Google AI Studio key ([aistudio.google.com](https://aistudio.google.com)) |
 | `API_TOKEN` | ✅ | — | 8-char alphanumeric token shared with browser users |
 | `LITELLM_MODEL` | ❌ | `gemini-2.5-flash` | Gemini model name; `gemini/` prefix (LiteLLM style) is stripped automatically |
+| `AUTH_HOLDOFF_SECS` | ❌ | `10` | Seconds an IP is locked out after a failed auth attempt (rate-limits brute force) |
 | `PORT` | ❌ | `8000` | Server port |
 
 ### Available Gemini models
@@ -137,5 +138,6 @@ location /ai/ {
 
 
 - The `API_TOKEN` is verified with `hmac.compare_digest` (constant-time, prevents timing attacks).
+- Failed auth attempts trigger a per-IP holdoff (`AUTH_HOLDOFF_SECS`, default 10 s), returning HTTP 429. At 1 attempt/10 s, a 2-word passphrase (170 K² ≈ 29 B combinations) would take ~4,600 years to brute-force; the default 8-char alphanumeric token ~890,000 years.
 - Provider API keys never leave the server.
 - CORS is currently open (`*`); restrict `allow_origins` for production deployments.

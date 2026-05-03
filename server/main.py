@@ -27,6 +27,7 @@ sys.path = [
 import hmac
 import json
 import os
+import time
 from typing import AsyncIterator
 
 import httpx
@@ -61,19 +62,62 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Auth helper
+# Auth rate limiter
 # ---------------------------------------------------------------------------
+# After a failed authentication attempt, the originating IP is held off for
+# AUTH_HOLDOFF_SECS seconds.  This limits brute-force to ~6 guesses/min,
+# making even a short alphanumeric token effectively uncrackable:
+#   2-word passphrase (170k² ≈ 29B) → ~4,600 years at 1 attempt/10s
+#   8-char alphanum (36⁸ ≈ 2.8T)    → ~890,000 years
+
+AUTH_HOLDOFF_SECS: float = float(os.environ.get("AUTH_HOLDOFF_SECS", "10"))
+
+# ip -> timestamp of last failed attempt (cleaned up on success)
+_auth_failures: dict[str, float] = {}
+
+
+def _get_client_ip(request: Request) -> str:
+    """Best-effort client IP, respecting Fly.io's X-Forwarded-For header."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 
 def _check_token(request: Request) -> None:
-    """Raise 401 if the bearer token doesn't match API_TOKEN."""
+    """Raise 401/429 if authentication fails or the IP is in cooldown."""
     if not API_TOKEN:
         raise HTTPException(status_code=500, detail="Server has no API_TOKEN configured.")
+
+    ip = _get_client_ip(request)
+
+    # Reject immediately if the IP is still in cooldown from a previous failure
+    last_fail = _auth_failures.get(ip)
+    if last_fail is not None:
+        elapsed = time.monotonic() - last_fail
+        if elapsed < AUTH_HOLDOFF_SECS:
+            retry_after = int(AUTH_HOLDOFF_SECS - elapsed) + 1
+            print(f"[auth] rate-limited {ip} (retry in {retry_after}s)", flush=True)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed attempts. Retry after {retry_after}s.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        # Holdoff expired — clear the entry
+        del _auth_failures[ip]
+
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
+        _auth_failures[ip] = time.monotonic()
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     provided = auth[len("Bearer "):]
     if not hmac.compare_digest(provided.encode(), API_TOKEN.encode()):
+        _auth_failures[ip] = time.monotonic()
+        print(f"[auth] failed attempt from {ip}", flush=True)
         raise HTTPException(status_code=401, detail="Invalid token.")
+
+    # Successful auth — clear any stale failure record
+    _auth_failures.pop(ip, None)
 
 # ---------------------------------------------------------------------------
 # Request / response schemas

@@ -2023,6 +2023,7 @@ function _classifyConnError(e, status, detail) {
   }
   const d = detail ? `: ${detail}` : "";
   if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})${d} — check your token`;
+  if (status === 429) return `Rate limited${d} — too many failed attempts, wait and retry`;
   if (status === 404) return `Not found (HTTP 404) — is the server URL correct?`;
   if (status === 500) return `Server error (HTTP 500)${d} — check server logs`;
   if (status >= 500) return `Server error (HTTP ${status})${d}`;
