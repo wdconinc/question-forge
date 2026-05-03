@@ -833,8 +833,9 @@ if __name__ == "__main__":
 
 </script>
 
-<!-- Import map: ALL @codemirror/* and @lezer/* go through single canonical URLs
-     so there is exactly one module instance of @codemirror/state in the page. -->
+<!-- Import map: canonical URLs for all shared deps, with ?external= in the
+     codemirror and lang-python URLs so esm.sh never bundles its own @codemirror/state.
+     Every bare specifier resolves here → exactly one module instance per package. -->
 <script type="importmap">
 {
   "imports": {
@@ -845,12 +846,12 @@ if __name__ == "__main__":
     "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6.18.1",
     "@codemirror/lint":         "https://esm.sh/@codemirror/lint@6.8.2",
     "@codemirror/search":       "https://esm.sh/@codemirror/search@6.5.8",
-    "@codemirror/basic-setup":  "https://esm.sh/@codemirror/basic-setup@0.7.1",
-    "@codemirror/lang-python":  "https://esm.sh/@codemirror/lang-python@6.1.6",
     "@lezer/common":            "https://esm.sh/@lezer/common@1.2.3",
     "@lezer/highlight":         "https://esm.sh/@lezer/highlight@1.2.1",
     "@lezer/lr":                "https://esm.sh/@lezer/lr@1.4.2",
-    "@lezer/python":            "https://esm.sh/@lezer/python@1.1.14"
+    "@lezer/python":            "https://esm.sh/@lezer/python@1.1.14",
+    "codemirror":               "https://esm.sh/codemirror@6.0.1?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands,@codemirror/autocomplete,@codemirror/lint,@codemirror/search,@lezer/common,@lezer/highlight",
+    "@codemirror/lang-python":  "https://esm.sh/@codemirror/lang-python@6.1.6?external=@codemirror/state,@codemirror/view,@codemirror/language,@lezer/common,@lezer/highlight,@lezer/lr,@lezer/python"
   }
 }
 </script>
@@ -859,8 +860,7 @@ if __name__ == "__main__":
      Main application (ES module)
      ============================================================ -->
 <script type="module">
-import { basicSetup } from "@codemirror/basic-setup";
-import { EditorView } from "@codemirror/view";
+import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
 import { python } from "@codemirror/lang-python";
 
