@@ -20,8 +20,15 @@ def local_shuffle_order(n, rng):
 
 
 def assign_answer_positions(n, rng):
-    assert n % 5 == 0
-    pool = np.array(LETTERS * (n // 5))
+    if n % 5 == 0:
+        pool = np.array(LETTERS * (n // 5))
+    else:
+        # Fallback: pad pool to next multiple of 5, then truncate
+        padded = (n // 5 + 1) * 5
+        pool = np.array(LETTERS * (padded // 5))
+        rng.shuffle(pool)
+        pool = pool[:n]
+        return pool.tolist()
     rng.shuffle(pool)
     return pool.tolist()
 
