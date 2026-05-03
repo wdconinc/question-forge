@@ -214,6 +214,10 @@
       background: #1e3a5f; color: white; padding: 5px 10px;
       display: flex; align-items: center; gap: 6px; font-family: inherit; font-size: 12px;
     }
+    .ai-diff-section-hdr {
+      background: #e8edf5; color: #1e3a5f; padding: 2px 8px; font-size: 11px;
+      font-weight: 600; font-family: inherit; border-top: 1px solid #d0d7de;
+    }
     .ai-diff-body { max-height: 280px; overflow-y: auto; }
     .diff-line { padding: 0 8px; white-space: pre; line-height: 1.5; }
     .diff-line.add  { background: #e6ffed; color: #116329; }
@@ -2051,11 +2055,25 @@ async function doSendChat() {
           aEl.scrollIntoView({ behavior: "smooth" });
 
         } else if (evt.type === "tool_call") {
-          // Snapshot current content for diff
-          const oldContent = evt.tool === "update_template"
-            ? (templateEditor ? templateEditor.getValue() : "")
-            : (pythonEditor   ? pythonEditor.getValue()   : "");
-          showDiffCard(evt.tool, oldContent, evt.content);
+          const changes = [];
+          // New combined tool
+          if (evt.tool === "update_question") {
+            if (evt.template !== undefined)
+              changes.push({ tool: "update_template", label: "Jinja2 template",
+                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template });
+            if (evt.python_code !== undefined)
+              changes.push({ tool: "update_python", label: "Python generator",
+                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code });
+          }
+          // Legacy single-tool events (backward compat)
+          else if (evt.tool === "update_template") {
+            changes.push({ tool: "update_template", label: "Jinja2 template",
+              oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.content ?? "" });
+          } else if (evt.tool === "update_python") {
+            changes.push({ tool: "update_python", label: "Python generator",
+              oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.content ?? "" });
+          }
+          if (changes.length) showDiffCard(changes);
 
         } else if (evt.type === "error") {
           throw new Error(evt.message);
@@ -2123,16 +2141,25 @@ function renderDiffHtml(diff, ctx = 3) {
   return html;
 }
 
-function showDiffCard(tool, oldContent, newContent) {
-  const label = tool === "update_template" ? "Jinja2 template" : "Python generator";
-  const diff    = lineDiff(oldContent, newContent);
-  const diffHtml = renderDiffHtml(diff);
+function showDiffCard(changes) {
+  // changes: [{tool, label, oldContent, newContent}, ...]
+  const title = changes.length > 1
+    ? "Proposed question update (template + Python)"
+    : `Proposed ${changes[0].label} update`;
+
+  let bodyHtml = "";
+  for (const c of changes) {
+    const diff = lineDiff(c.oldContent, c.newContent);
+    if (changes.length > 1)
+      bodyHtml += `<div class="ai-diff-section-hdr">📄 ${escHtml(c.label)}</div>`;
+    bodyHtml += renderDiffHtml(diff);
+  }
 
   const card = document.createElement("div");
   card.className = "ai-diff-card";
   card.innerHTML = `
-    <div class="ai-diff-card-hdr">📝 Proposed ${escHtml(label)} update</div>
-    <div class="ai-diff-body">${diffHtml}</div>
+    <div class="ai-diff-card-hdr">📝 ${escHtml(title)}</div>
+    <div class="ai-diff-body">${bodyHtml}</div>
     <div class="ai-diff-actions">
       <button class="btn-diff-accept">✓ Accept</button>
       <button class="btn-diff-reject">✗ Reject</button>
@@ -2142,33 +2169,33 @@ function showDiffCard(tool, oldContent, newContent) {
 
   function resolve(accepted) {
     if (accepted) {
-      if (tool === "update_template" && templateEditor) {
-        templateEditor.setValue(newContent);
-        if (state.selectedQuestion) {
-          state.questions[state.selectedQuestion].template = newContent;
-          renderParamsPanel(state.selectedQuestion);
-          debounceSave();
-        }
-      } else if (tool === "update_python" && pythonEditor) {
-        pythonEditor.setValue(newContent);
-        if (state.selectedQuestion) {
-          state.questions[state.selectedQuestion].python_code = newContent;
-          debounceSave();
+      for (const c of changes) {
+        if (c.tool === "update_template" && templateEditor) {
+          templateEditor.setValue(c.newContent);
+          if (state.selectedQuestion) {
+            state.questions[state.selectedQuestion].template = c.newContent;
+            renderParamsPanel(state.selectedQuestion);
+          }
+        } else if (c.tool === "update_python" && pythonEditor) {
+          pythonEditor.setValue(c.newContent);
+          if (state.selectedQuestion)
+            state.questions[state.selectedQuestion].python_code = c.newContent;
         }
       }
+      if (state.selectedQuestion) debounceSave();
     }
-    const status   = accepted ? "accepted" : "rejected";
-    const icon     = accepted ? "✓" : "✗";
-    const statusText = `${icon} ${label} update ${status}`;
+    const status = accepted ? "accepted" : "rejected";
+    const icon   = accepted ? "✓" : "✗";
+    const what   = changes.map(c => c.label).join(" + ");
+    const statusText = `${icon} ${what} update ${status}`;
     const badge = document.createElement("div");
     badge.className = `ai-diff-resolved ${status}`;
     badge.textContent = statusText;
     card.replaceWith(badge);
     badge.scrollIntoView({behavior: "smooth"});
-    // Persist the outcome to chat log
     aiState.chatLog.push({role: "system-note", html: escHtml(statusText), toolBadges: []});
     saveAIState();
-    if (accepted) toast(`AI ${label} update applied ✓`, "success");
+    if (accepted) toast(`AI update applied ✓`, "success");
   }
 
   card.querySelector(".btn-diff-accept").addEventListener("click", () => resolve(true));

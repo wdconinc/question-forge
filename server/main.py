@@ -88,40 +88,25 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "update_template",
+            "name": "update_question",
             "description": (
-                "Replace the entire Jinja2 template for the current question. "
-                "Use this when the user asks to modify, fix, or rewrite the template."
+                "Update the Jinja2 template and/or Python generator for the current question "
+                "in a single operation. Provide `template` to change the template, `python_code` "
+                "to change the Python code, or both. Always use this tool when the user asks to "
+                "modify any part of the question."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content": {
+                    "template": {
                         "type": "string",
-                        "description": "The complete new Jinja2 template text.",
-                    }
-                },
-                "required": ["content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_python",
-            "description": (
-                "Replace the entire Python question-generator code for the current question. "
-                "Use this when the user asks to modify, fix, or rewrite the Python code."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {
+                        "description": "The complete new Jinja2 template text. Omit if not changing the template.",
+                    },
+                    "python_code": {
                         "type": "string",
-                        "description": "The complete new Python generator code.",
-                    }
+                        "description": "The complete new Python generator code. Omit if not changing the Python code.",
+                    },
                 },
-                "required": ["content"],
             },
         },
     },
@@ -151,7 +136,8 @@ Guidelines:
   topic (str), difficulty (int 1-3).
 - The Jinja2 template renders the question text and answer choices.
   Parameters are passed as keyword arguments by `render_template(qid, params)`.
-- When asked to modify code or template, use the update_template or update_python tools.
+- When asked to modify code or template, use the update_question tool.
+  You may update both template and python_code in a single call when both need changing.
 - Otherwise reply in plain text (Markdown is fine).
 """
 
@@ -213,13 +199,15 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     args = json.loads(tc["arguments_buf"])
                 except json.JSONDecodeError:
                     args = {}
-                yield {
-                    "data": json.dumps({
-                        "type": "tool_call",
-                        "tool": tc["name"],
-                        "content": args.get("content", ""),
-                    })
-                }
+                payload: dict = {"type": "tool_call", "tool": tc["name"]}
+                if "template" in args:
+                    payload["template"] = args["template"]
+                if "python_code" in args:
+                    payload["python_code"] = args["python_code"]
+                # Legacy single-content tools (if ever called)
+                if "content" in args:
+                    payload["content"] = args["content"]
+                yield {"data": json.dumps(payload)}
 
             yield {"data": json.dumps({"type": "done"})}
 
