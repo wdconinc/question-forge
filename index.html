@@ -1945,6 +1945,8 @@ const aiState = {
   systemPrompt: "",  // custom system prompt override (empty = use server default)
   messages: [],   // {role, content} conversation history sent to LLM
   chatLog: [],    // {role, html, toolBadges} display log — persisted in localStorage
+  panelOpen: false,  // whether the chat panel is visible
+  panelWidth: null,  // saved panel width in px
 };
 
 function loadAIState() {
@@ -1954,6 +1956,8 @@ function loadAIState() {
     if (s.token)   aiState.token   = s.token;
     if (typeof s.systemPrompt === "string") aiState.systemPrompt = s.systemPrompt;
     if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
+    if (typeof s.panelOpen === "boolean") aiState.panelOpen = s.panelOpen;
+    if (typeof s.panelWidth === "number") aiState.panelWidth = s.panelWidth;
   } catch {}
 }
 
@@ -1963,6 +1967,8 @@ function saveAIState() {
     token: aiState.token,
     systemPrompt: aiState.systemPrompt,
     chatLog: aiState.chatLog,
+    panelOpen: aiState.panelOpen,
+    panelWidth: aiState.panelWidth,
   }));
 }
 
@@ -2495,6 +2501,8 @@ function toggleChatPanel() {
   const rzChat = document.getElementById("rsz-chat");
   const isOpen = panel.classList.toggle("open");
   rzChat.style.display = isOpen ? "" : "none";
+  aiState.panelOpen = isOpen;
+  saveAIState();
 }
 
 function setupChatResizer() {
@@ -2512,6 +2520,8 @@ function setupChatResizer() {
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      aiState.panelWidth = document.getElementById("chat-panel").offsetWidth;
+      saveAIState();
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -2611,6 +2621,15 @@ function setupAIChat() {
       pop.classList.remove("open");
     }
   });
+
+  // Restore panel open/width state from previous session (hidden by default)
+  if (aiState.panelOpen) {
+    const panel = document.getElementById("chat-panel");
+    const rzChat = document.getElementById("rsz-chat");
+    panel.classList.add("open");
+    rzChat.style.display = "";
+    if (aiState.panelWidth) panel.style.width = aiState.panelWidth + "px";
+  }
 
   // Auto-connect silently if we have saved credentials
   if (aiState.url && aiState.token) {
