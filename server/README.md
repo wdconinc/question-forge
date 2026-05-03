@@ -30,23 +30,24 @@ The server starts on `http://localhost:8000` by default.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| `GOOGLE_API_KEY` | ✅ | — | Google AI Studio key ([aistudio.google.com](https://aistudio.google.com)) |
 | `API_TOKEN` | ✅ | — | 8-char alphanumeric token shared with browser users |
-| `LITELLM_MODEL` | ✅ | `gpt-4o` | Any [LiteLLM model string](https://docs.litellm.ai/docs/providers) |
-| `OPENAI_API_KEY` | if using OpenAI | — | |
-| `ANTHROPIC_API_KEY` | if using Anthropic | — | |
-| `GOOGLE_API_KEY` | if using Gemini | — | Google AI Studio key |
+| `LITELLM_MODEL` | ❌ | `gemini-2.5-flash` | Gemini model name; `gemini/` prefix (LiteLLM style) is stripped automatically |
 | `PORT` | ❌ | `8000` | Server port |
 
-### Model examples
+### Available Gemini models
 
 ```
-LITELLM_MODEL=gpt-4o                          # OpenAI
-LITELLM_MODEL=claude-3-5-sonnet-20241022      # Anthropic
-LITELLM_MODEL=gemini/gemini-2.5-flash              # Google Gemini (fast, free tier available)
-LITELLM_MODEL=gemini/gemini-1.5-pro           # Google Gemini Pro
-LITELLM_MODEL=ollama/llama3                   # Local Ollama
-LITELLM_MODEL=azure/gpt-4o                    # Azure OpenAI
+LITELLM_MODEL=gemini-2.5-flash        # fast, free tier available (default)
+LITELLM_MODEL=gemini-2.5-flash-lite   # lighter/cheaper
+LITELLM_MODEL=gemini-2.5-pro          # highest capability
+LITELLM_MODEL=gemini/gemini-2.5-flash # LiteLLM-style prefix also accepted
 ```
+
+> **Note:** The server calls the Gemini REST API directly via `httpx` (no litellm
+> dependency) to keep the container footprint small. Only Google Gemini models are
+> supported. To use OpenAI/Anthropic/Ollama, run a litellm proxy and point
+> `LITELLM_MODEL` + server URL at it.
 
 ## API
 

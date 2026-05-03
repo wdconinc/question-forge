@@ -4,8 +4,11 @@ QuestionForge AI Runner Server
 A lightweight FastAPI server that:
  - Authenticates browsers with an 8-char token (Authorization: Bearer header)
  - Streams LLM responses back as SSE
- - Exposes update_template / update_python function-calling tools so the AI
-   can edit the active question's editors in the browser
+ - Exposes function-calling tools so the AI can edit the active question's
+   editors in the browser
+
+Uses the Gemini REST API directly via httpx — no litellm dependency, keeping
+the container memory footprint small enough for Fly.io free tier.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import json
 import os
 from typing import AsyncIterator
 
-import litellm
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,8 +38,14 @@ from sse_starlette.sse import EventSourceResponse
 
 load_dotenv()
 
-API_TOKEN: str = os.environ.get("API_TOKEN", "")
-LITELLM_MODEL: str = os.environ.get("LITELLM_MODEL", "gpt-4o")
+API_TOKEN: str    = os.environ.get("API_TOKEN", "")
+GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
+
+# Accept "gemini/gemini-2.5-flash" (LiteLLM style) or bare "gemini-2.5-flash"
+_raw_model = os.environ.get("LITELLM_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL: str = _raw_model.split("/")[-1]
+
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ---------------------------------------------------------------------------
 # App
@@ -199,7 +208,34 @@ Current question ID: {qid}
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "model": LITELLM_MODEL}
+    return {"ok": True, "model": GEMINI_MODEL}
+
+# ---------------------------------------------------------------------------
+# /chat  (SSE streaming)
+# ---------------------------------------------------------------------------
+
+def _to_gemini_tools() -> list[dict]:
+    """Convert OpenAI-style TOOLS list to Gemini functionDeclarations."""
+    return [{
+        "functionDeclarations": [
+            {
+                "name": t["function"]["name"],
+                "description": t["function"]["description"],
+                "parameters": t["function"].get("parameters", {}),
+            }
+            for t in TOOLS
+        ]
+    }]
+
+
+def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tuple[str, list[dict]]:
+    """Return (systemInstruction text, contents list) in Gemini format."""
+    contents = []
+    for m in messages:
+        role = "model" if m.role == "assistant" else "user"
+        contents.append({"role": role, "parts": [{"text": m.content}]})
+    return system_prompt, contents
+
 
 # ---------------------------------------------------------------------------
 # /chat  (SSE streaming)
@@ -209,49 +245,57 @@ async def health() -> dict:
 async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
     _check_token(request)
 
-    messages = [{"role": "system", "content": _system_prompt(req)}]
-    for m in req.messages:
-        messages.append({"role": m.role, "content": m.content})
+    if not GOOGLE_API_KEY:
+        raise HTTPException(status_code=500, detail="GOOGLE_API_KEY not configured on server.")
+
+    system_text, contents = _to_gemini_contents(_system_prompt(req), req.messages)
+
+    body = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": contents,
+        "tools": _to_gemini_tools(),
+        "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+        "generationConfig": {"temperature": 0.7},
+    }
+
+    url = f"{GEMINI_BASE}/{GEMINI_MODEL}:streamGenerateContent"
+    params = {"key": GOOGLE_API_KEY, "alt": "sse"}
 
     async def _stream() -> AsyncIterator[dict]:
         try:
-            response = await litellm.acompletion(
-                model=LITELLM_MODEL,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                stream=True,
-            )
+            async with httpx.AsyncClient(timeout=120) as client:
+                async with client.stream("POST", url, params=params, json=body) as resp:
+                    if resp.status_code != 200:
+                        err = await resp.aread()
+                        yield {"data": json.dumps({"type": "error", "message": err.decode()})}
+                        return
 
-            tool_calls: dict[int, dict] = {}  # index → {name, arguments_buf}
+                    function_calls: list[dict] = []
 
-            async for chunk in response:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta is None:
-                    continue
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
 
-                # Text content
-                if delta.content:
-                    yield {"data": json.dumps({"type": "text", "delta": delta.content})}
-
-                # Tool calls (streamed in pieces)
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls:
-                            tool_calls[idx] = {"name": "", "arguments_buf": ""}
-                        if tc.function.name:
-                            tool_calls[idx]["name"] = tc.function.name
-                        if tc.function.arguments:
-                            tool_calls[idx]["arguments_buf"] += tc.function.arguments
+                        for candidate in chunk.get("candidates", []):
+                            parts = candidate.get("content", {}).get("parts", [])
+                            for part in parts:
+                                if "text" in part and part["text"]:
+                                    yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
+                                if "functionCall" in part:
+                                    function_calls.append(part["functionCall"])
 
             # Emit completed tool calls
-            for tc in tool_calls.values():
-                try:
-                    args = json.loads(tc["arguments_buf"])
-                except json.JSONDecodeError:
-                    args = {}
-                payload: dict = {"type": "tool_call", "tool": tc["name"]}
+            for fc in function_calls:
+                name = fc.get("name", "")
+                args = fc.get("args", {})
+                payload: dict = {"type": "tool_call", "tool": name}
                 if "template" in args:
                     payload["template"] = args["template"]
                 if "python_code" in args:
@@ -262,7 +306,6 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     payload["title"] = args["title"]
                 if "topic" in args:
                     payload["topic"] = args.get("topic", "")
-                # Legacy single-content tools (if ever called)
                 if "content" in args:
                     payload["content"] = args["content"]
                 yield {"data": json.dumps(payload)}
@@ -273,6 +316,7 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
             yield {"data": json.dumps({"type": "error", "message": str(exc)})}
 
     return EventSourceResponse(_stream())
+
 
 
 # ---------------------------------------------------------------------------
