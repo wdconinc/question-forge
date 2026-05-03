@@ -444,6 +444,8 @@
         <span>🤖 AI Assistant</span>
         <button id="btn-ai-settings" title="Connection settings"
           style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:14px;padding:0 2px">⚙</button>
+        <button id="btn-chat-clear" title="Clear chat history"
+          style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:13px;padding:0 2px">🗑</button>
         <button id="btn-chat-close"
           style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:16px;padding:0 2px;line-height:1">✕</button>
       </div>
@@ -1844,19 +1846,25 @@ const aiState = {
   connected: false,
   url: "http://localhost:8000",
   token: "",
-  messages: [],   // {role, content} conversation history
+  messages: [],   // {role, content} conversation history sent to LLM
+  chatLog: [],    // {role, html, toolBadges} display log — persisted in localStorage
 };
 
 function loadAIState() {
   try {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
-    if (s.url)   aiState.url   = s.url;
-    if (s.token) aiState.token = s.token;
+    if (s.url)     aiState.url     = s.url;
+    if (s.token)   aiState.token   = s.token;
+    if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
   } catch {}
 }
 
 function saveAIState() {
-  localStorage.setItem("questionForge_ai", JSON.stringify({ url: aiState.url, token: aiState.token }));
+  localStorage.setItem("questionForge_ai", JSON.stringify({
+    url: aiState.url,
+    token: aiState.token,
+    chatLog: aiState.chatLog,
+  }));
 }
 
 function setAIDot(state) {
@@ -1866,7 +1874,7 @@ function setAIDot(state) {
   dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
 }
 
-function appendChatMsg(role, html, toolBadges) {
+function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
   el.innerHTML = html;
@@ -1881,7 +1889,29 @@ function appendChatMsg(role, html, toolBadges) {
   }
   document.getElementById("chat-messages").appendChild(el);
   el.scrollIntoView({ behavior: "smooth" });
+  if (!skipLog) {
+    aiState.chatLog.push({ role, html, toolBadges: toolBadges || [] });
+    saveAIState();
+  }
   return el;
+}
+
+function replayChatLog() {
+  if (!aiState.chatLog.length) return;
+  const container = document.getElementById("chat-messages");
+  // Clear the default placeholder
+  container.innerHTML = "";
+  for (const entry of aiState.chatLog) {
+    appendChatMsg(entry.role, entry.html, entry.toolBadges, true /* skipLog */);
+  }
+}
+
+function clearChatLog() {
+  aiState.chatLog = [];
+  aiState.messages = [];
+  saveAIState();
+  const container = document.getElementById("chat-messages");
+  container.innerHTML = `<div class="chat-msg system-note">Chat history cleared.</div>`;
 }
 
 async function doAIConnect() {
@@ -2090,9 +2120,12 @@ function setupAIChat() {
   if (urlEl) urlEl.value = aiState.url;
   if (tokEl) tokEl.value = aiState.token;
 
+  replayChatLog();
+
   const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
   on("btn-toggle-chat",    toggleChatPanel);
   on("btn-chat-close",     toggleChatPanel);
+  on("btn-chat-clear",     clearChatLog);
   on("btn-ai-settings",    showAIConnPopover);
   on("btn-ai-connect",     doAIConnect);
   on("btn-ai-disconnect",  doAIDisconnect);
