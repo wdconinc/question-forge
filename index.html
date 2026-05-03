@@ -1586,6 +1586,9 @@ function doDownloadPDF() {
     `<strong>Answer Key — Paper ${_renderedActivePaper} (seed=${seed})</strong><br>` +
     answers.map((a, i) => `Q${String(i+1).padStart(2,"0")}: ${a}`).join(" &nbsp; ") + "</div>";
   const win = window.open("", "_blank");
+  /* eslint-disable no-useless-escape */
+  // <\/script> escapes are required to prevent the browser's HTML parser from
+  // closing the enclosing <script> tag; they are not gratuitous.
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Exam Paper ${_renderedActivePaper}</title>
 <script>window.MathJax={tex:{inlineMath:[["$","$"],["\\\\(","\\\\)"]]},startup:{typeset:false}};<\/script>
@@ -1598,6 +1601,7 @@ function doDownloadPDF() {
 <script>
   MathJax.startup.promise.then(()=>{MathJax.typesetPromise().then(()=>window.print());});
 <\/script></body></html>`);
+  /* eslint-enable no-useless-escape */
   win.document.close();
 }
 

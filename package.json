@@ -1,0 +1,27 @@
+{
+  "name": "question-forge",
+  "version": "1.0.0",
+  "description": "A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (and similar courses). Uses [Pyodide](https://pyodide.org/) to run Python question-generation code directly in your browser. No server required. All data stays in `localStorage`.",
+  "main": "index.js",
+  "scripts": {
+    "lint": "eslint index.html",
+    "lint:server": "ruff check server/main.py",
+    "lint:all": "eslint index.html && ruff check server/main.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wdconinc/question-forge.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/wdconinc/question-forge/issues"
+  },
+  "homepage": "https://github.com/wdconinc/question-forge#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-html": "^8.1.4"
+  }
+}

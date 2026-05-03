@@ -12,3 +12,7 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.ruff.lint]
+# E402: sys.path manipulation before imports is intentional (Python version filter)
+ignore = ["E402"]
