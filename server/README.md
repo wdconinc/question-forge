@@ -15,6 +15,15 @@ cp .env.example .env
 python main.py
 ```
 
+Or with `uv` (recommended — pins Python 3.13 via `.python-version`):
+```bash
+cd server
+cp .env.example .env
+# Edit .env
+uv sync
+uv run main.py
+```
+
 The server starts on `http://localhost:8000` by default.
 
 ## Configuration (`.env`)
