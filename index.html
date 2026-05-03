@@ -90,9 +90,6 @@
     .sidebar-item input[type="checkbox"] { flex-shrink: 0; cursor: pointer; accent-color: #f0ab00; }
     .sortable-ghost { opacity: 0.4; background: #c8d8f0; }
 
-    /* Editor area */
-    #editor-area { display: flex; flex-direction: column; overflow: hidden; }
-
     /* Editor panels */
     .ep { display: flex; flex-direction: column; overflow: hidden; }
     .ep-hdr {
@@ -2062,14 +2059,27 @@ function setupChatResizer() {
 }
 
 function showAIConnPopover() {
-  const btn = document.getElementById("btn-toggle-chat");
   const pop = document.getElementById("ai-conn-popover");
-  // Position below the toolbar button
-  const rect = (document.getElementById("btn-ai-settings") || btn).getBoundingClientRect();
-  pop.style.top  = (rect.bottom + 6) + "px";
-  pop.style.right = "12px";
-  pop.style.left  = "auto";
+  const settingsBtn = document.getElementById("btn-ai-settings");
   pop.classList.toggle("open");
+  if (!pop.classList.contains("open")) return;
+
+  // Position: prefer above the button; fall back to below if not enough room
+  const rect = settingsBtn.getBoundingClientRect();
+  const popH = 200; // approximate height before render
+  const spaceAbove = rect.top;
+  const spaceBelow = window.innerHeight - rect.bottom;
+
+  pop.style.left  = "auto";
+  pop.style.right = (window.innerWidth - rect.right) + "px";
+
+  if (spaceAbove >= popH || spaceAbove >= spaceBelow) {
+    pop.style.bottom = (window.innerHeight - rect.top + 4) + "px";
+    pop.style.top    = "auto";
+  } else {
+    pop.style.top    = (rect.bottom + 4) + "px";
+    pop.style.bottom = "auto";
+  }
 }
 
 function setupAIChat() {
