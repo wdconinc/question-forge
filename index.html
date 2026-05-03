@@ -944,8 +944,8 @@ async function initPyodide() {
   setStatus("Loading Pyodide runtime\u2026");
   try {
     pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX });
-    setStatus("Loading NumPy\u2026");
-    await pyodide.loadPackage(["numpy"]);
+    setStatus("Loading NumPy & micropip\u2026");
+    await pyodide.loadPackage(["numpy", "micropip"]);
     setStatus("Installing Jinja2 via micropip\u2026");
     await pyodide.runPythonAsync(`
 import micropip
