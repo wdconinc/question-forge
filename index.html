@@ -833,7 +833,8 @@ if __name__ == "__main__":
 
 </script>
 
-<!-- Import map: ensures all @codemirror packages share one module instance -->
+<!-- Import map: ALL @codemirror/* and @lezer/* go through single canonical URLs
+     so there is exactly one module instance of @codemirror/state in the page. -->
 <script type="importmap">
 {
   "imports": {
@@ -843,7 +844,13 @@ if __name__ == "__main__":
     "@codemirror/commands":     "https://esm.sh/@codemirror/commands@6.7.0",
     "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6.18.1",
     "@codemirror/lint":         "https://esm.sh/@codemirror/lint@6.8.2",
-    "@codemirror/search":       "https://esm.sh/@codemirror/search@6.5.8"
+    "@codemirror/search":       "https://esm.sh/@codemirror/search@6.5.8",
+    "@codemirror/basic-setup":  "https://esm.sh/@codemirror/basic-setup@0.7.1",
+    "@codemirror/lang-python":  "https://esm.sh/@codemirror/lang-python@6.1.6",
+    "@lezer/common":            "https://esm.sh/@lezer/common@1.2.3",
+    "@lezer/highlight":         "https://esm.sh/@lezer/highlight@1.2.1",
+    "@lezer/lr":                "https://esm.sh/@lezer/lr@1.4.2",
+    "@lezer/python":            "https://esm.sh/@lezer/python@1.1.14"
   }
 }
 </script>
@@ -852,9 +859,10 @@ if __name__ == "__main__":
      Main application (ES module)
      ============================================================ -->
 <script type="module">
-import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands,@codemirror/autocomplete,@codemirror/lint,@codemirror/search";
-import { python } from "https://esm.sh/@codemirror/lang-python@6.1.6?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands,@codemirror/autocomplete,@codemirror/lint,@codemirror/search";
+import { basicSetup } from "@codemirror/basic-setup";
+import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
+import { python } from "@codemirror/lang-python";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const STORAGE_KEY = "questionforge_state";
