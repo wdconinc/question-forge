@@ -2140,7 +2140,7 @@ async function doSendChat() {
           aEl.scrollIntoView({ behavior: "smooth" });
 
         } else if (evt.type === "tool_call") {
-          const changes = [];
+          let changes = [];
           // New combined tool
           if (evt.tool === "update_question") {
             if (evt.template !== undefined)
