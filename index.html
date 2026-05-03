@@ -97,10 +97,11 @@
       display: flex; align-items: center; gap: 8px; flex-shrink: 0;
     }
     .ep-hdr span { flex: 1; }
-    .ep-body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-    /* CodeMirror 5 fills the pane */
+    .ep-body { flex: 1; overflow: hidden; position: relative; }
+    /* CodeMirror 5 fills the pane via absolute positioning */
     .ep-body .CodeMirror {
-      flex: 1; height: 100%; font-size: 12.5px;
+      position: absolute; inset: 0; height: 100%; width: 100%;
+      font-size: 12.5px;
       font-family: "SF Mono", Menlo, Consolas, monospace;
     }
     .ep-body .CodeMirror-scroll { min-height: 60px; }
