@@ -2117,10 +2117,10 @@ async function doSendChat() {
           if (evt.tool === "update_question") {
             if (evt.template !== undefined)
               changes.push({ tool: "update_template", label: "Jinja2 template",
-                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template });
+                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template ?? "" });
             if (evt.python_code !== undefined)
               changes.push({ tool: "update_python", label: "Python generator",
-                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code });
+                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code ?? "" });
           } else if (evt.tool === "create_question") {
             showCreateCard({
               question_id: evt.question_id,
@@ -2165,6 +2165,8 @@ async function doSendChat() {
 
 // ── Diff utilities ──────────────────────────────────────────────────────────
 function lineDiff(a, b) {
+  a = (a == null) ? "" : String(a);
+  b = (b == null) ? "" : String(b);
   const aLines = a === "" ? [] : a.split("\n");
   const bLines = b === "" ? [] : b.split("\n");
   const m = aLines.length, n = bLines.length;
