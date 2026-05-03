@@ -2008,11 +2008,11 @@ function clearChatLog() {
   container.innerHTML = `<div class="chat-msg system-note">Chat history cleared.</div>`;
 }
 
-async function doAIConnect() {
+async function doAIConnect(silent = false) {
   const url   = document.getElementById("ai-server-url").value.trim().replace(/\/$/, "");
   const token = document.getElementById("ai-token").value.trim();
   const statusEl = document.getElementById("ai-conn-status");
-  statusEl.textContent = "Testing connection…";
+  if (!silent) statusEl.textContent = "Testing connection…";
   try {
     const res = await fetch(url + "/health");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2025,10 +2025,12 @@ async function doAIConnect() {
     document.getElementById("btn-chat-send").disabled = false;
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
-    appendChatMsg("system-note", `Connected to ${url}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${url}`);
   } catch (e) {
-    statusEl.textContent = "✗ " + (e.message || "Connection failed");
-    setAIDot("error");
+    if (!silent) {
+      statusEl.textContent = "✗ " + (e.message || "Connection failed");
+      setAIDot("error");
+    }
   }
 }
 
@@ -2442,6 +2444,11 @@ function setupAIChat() {
       pop.classList.remove("open");
     }
   });
+
+  // Auto-connect silently if we have saved credentials
+  if (aiState.url && aiState.token) {
+    doAIConnect(true);
+  }
 }
 
 main();
