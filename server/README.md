@@ -42,7 +42,7 @@ The server starts on `http://localhost:8000` by default.
 ```
 LITELLM_MODEL=gpt-4o                          # OpenAI
 LITELLM_MODEL=claude-3-5-sonnet-20241022      # Anthropic
-LITELLM_MODEL=gemini/gemini-2.5-flash-preview-04-17  # Google Gemini (fast, free tier available)
+LITELLM_MODEL=gemini/gemini-2.5-flash              # Google Gemini (fast, free tier available)
 LITELLM_MODEL=gemini/gemini-1.5-pro           # Google Gemini Pro
 LITELLM_MODEL=ollama/llama3                   # Local Ollama
 LITELLM_MODEL=azure/gpt-4o                    # Azure OpenAI
