@@ -2034,15 +2034,43 @@ async function doAIConnect(silent = false) {
   }
 }
 
-function doAIDisconnect() {
-  aiState.connected = false; aiState.token = ""; aiState.messages = [];
+// Mark UI as disconnected. keepCredentials=true when the server went away
+// (we want to auto-reconnect); false when the user explicitly disconnects.
+function markAIDisconnected(statusMsg = "Disconnected.", keepCredentials = true) {
+  aiState.connected = false;
+  if (!keepCredentials) { aiState.token = ""; aiState.messages = []; }
   setAIDot("");
-  document.getElementById("chat-input").disabled  = true;
+  document.getElementById("chat-input").disabled   = true;
   document.getElementById("btn-chat-send").disabled = true;
-  document.getElementById("btn-ai-connect").style.display = "";
+  document.getElementById("btn-ai-connect").style.display    = "";
   document.getElementById("btn-ai-disconnect").style.display = "none";
-  document.getElementById("ai-conn-status").textContent = "Disconnected.";
+  document.getElementById("ai-conn-status").textContent = statusMsg;
+}
+
+function doAIDisconnect() {
+  markAIDisconnected("Disconnected.", false);
   appendChatMsg("system-note", "Disconnected.");
+}
+
+let _healthTimer = null;
+function startHealthCheck() {
+  if (_healthTimer) return;
+  _healthTimer = setInterval(async () => {
+    if (!aiState.url) return;
+    try {
+      const res = await fetch(aiState.url + "/health", { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!aiState.connected) {
+        // Server came back — silently reconnect
+        doAIConnect(true);
+      }
+    } catch {
+      if (aiState.connected) {
+        markAIDisconnected("Server unreachable.");
+        appendChatMsg("system-note", "⚠ Server unreachable — connection lost.");
+      }
+    }
+  }, 15000);
 }
 
 async function doSendChat() {
@@ -2156,7 +2184,12 @@ async function doSendChat() {
 
   } catch (e) {
     aEl.innerHTML = `<span style="color:#c62828">${escHtml(e.message || String(e))}</span>`;
-    setAIDot("error");
+    // Network failure → mark disconnected so the user knows to reconnect
+    if (e instanceof TypeError || (e.message && e.message.includes("fetch"))) {
+      markAIDisconnected("Server unreachable.");
+    } else {
+      setAIDot("error");
+    }
   } finally {
     document.getElementById("btn-chat-send").disabled = false;
     input.focus();
@@ -2451,6 +2484,9 @@ function setupAIChat() {
   if (aiState.url && aiState.token) {
     doAIConnect(true);
   }
+
+  // Background health poll — detect server going away between messages
+  startHealthCheck();
 }
 
 main();
