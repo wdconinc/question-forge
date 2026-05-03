@@ -1,0 +1,31 @@
+# fly.toml — QuestionForge AI Runner
+# Run `fly launch --no-deploy` inside server/ to attach this to your Fly app,
+# then `fly secrets set API_TOKEN=... GOOGLE_API_KEY=... LITELLM_MODEL=...`
+# then `fly deploy`.
+
+app = "question-forge-server"   # change to your app name after `fly apps create`
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

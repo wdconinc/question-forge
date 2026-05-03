@@ -76,8 +76,52 @@ Streams Server-Sent Events:
 
 ## Running on a remote server
 
-The browser's URL field (in the AI Chat connection settings) can point to any reachable URL.
-Use HTTPS and a reverse proxy (nginx/caddy) for production.
+### Fly.io (recommended)
+
+[Install `flyctl`](https://fly.io/docs/hands-on/install-flyctl/), then from the `server/` directory:
+
+```bash
+# 1. Authenticate
+fly auth login
+
+# 2. Create a new app (pick a unique name)
+fly apps create question-forge-server   # or any name you like
+
+# 3. Update the app name in fly.toml to match
+#    app = "question-forge-server"
+
+# 4. Set secrets (never committed to git)
+fly secrets set \
+  API_TOKEN=your8chartoken \
+  LITELLM_MODEL=gemini/gemini-2.5-flash \
+  GOOGLE_API_KEY=your_google_ai_studio_key
+
+# 5. Deploy
+fly deploy
+```
+
+The server will be live at `https://<app-name>.fly.dev`.  
+Paste that URL into the QuestionForge **AI Chat → ⚙ Connection settings** dialog.
+
+To redeploy after code changes:
+```bash
+fly deploy
+```
+
+To view logs:
+```bash
+fly logs
+```
+
+**Scaling / cost:** the default `fly.toml` uses a shared-cpu-1x 256 MB machine with
+`auto_stop_machines = "stop"` — it sleeps when idle (free tier eligible) and wakes on
+the next request (≈2 s cold start).
+
+---
+
+### Self-hosted (nginx reverse proxy)
+
+The browser's URL field can point to any reachable HTTPS URL.
 
 ```nginx
 location /ai/ {
@@ -89,7 +133,7 @@ location /ai/ {
 }
 ```
 
-## Security notes
+
 
 - The `API_TOKEN` is verified with `hmac.compare_digest` (constant-time, prevents timing attacks).
 - Provider API keys never leave the server.
