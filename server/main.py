@@ -28,12 +28,14 @@ import hmac
 import json
 import os
 import time
+import concurrent.futures
 from typing import AsyncIterator
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from jinja2 import Environment as JinjaEnv, StrictUndefined
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -71,6 +73,7 @@ app.add_middleware(
 # locked out by an attacker) is accepted.
 
 AUTH_HOLDOFF_SECS: float = float(os.environ.get("AUTH_HOLDOFF_SECS", "10"))
+MAX_FIX_ATTEMPTS: int   = int(os.environ.get("MAX_FIX_ATTEMPTS", "2"))
 
 _last_auth_failure: float = 0.0   # monotonic timestamp of most recent failure
 
@@ -296,6 +299,98 @@ def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tupl
 
 
 # ---------------------------------------------------------------------------
+# Question validation helpers
+# ---------------------------------------------------------------------------
+
+def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
+    """Execute python_code, call generate_params(), render template.
+
+    Runs in a thread pool with a 5-second timeout to guard against infinite
+    loops in AI-generated code.  Returns (ok, error_message).
+    """
+    def _run() -> tuple[bool, str]:
+        try:
+            namespace: dict = {}
+            exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
+            generate = namespace.get("generate_params")
+            if generate is None:
+                return False, "python_code must define a generate_params() function"
+            params = generate()
+            if not isinstance(params, dict):
+                return False, f"generate_params() must return a dict, got {type(params).__name__}"
+            env = JinjaEnv(undefined=StrictUndefined)
+            rendered = env.from_string(template).render(**params)
+            if not rendered.strip():
+                return False, "Template rendered to an empty string"
+            return True, ""
+        except Exception as exc:  # noqa: BLE001
+            return False, f"{type(exc).__name__}: {exc}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_run)
+        try:
+            return future.result(timeout=5)
+        except concurrent.futures.TimeoutError:
+            return False, "Execution timed out (>5 s)"
+
+
+async def _gemini_fix_call(
+    system_text: str,
+    contents: list[dict],
+    fc_name: str,
+    fc_args: dict,
+    error: str,
+) -> dict | None:
+    """Non-streaming Gemini call that feeds a validation error back as a
+    functionResponse and asks the model to return a corrected function call.
+    Returns the new args dict, or None if Gemini didn't return a function call.
+    """
+    fix_contents = contents + [
+        {"role": "model", "parts": [{"functionCall": {"name": fc_name, "args": fc_args}}]},
+        {"role": "user", "parts": [{"functionResponse": {
+            "name": fc_name,
+            "response": {
+                "error": (
+                    f"Validation failed: {error}\n\n"
+                    "Please fix the template and python_code so they work together without errors. "
+                    "Requirements:\n"
+                    "  • python_code must define a generate_params() function that returns a dict\n"
+                    "  • All Jinja2 variables in the template must be keys in that dict\n"
+                    "  • The template must render without exceptions using the generated params"
+                )
+            },
+        }}]},
+    ]
+    body = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": fix_contents,
+        "tools": _to_gemini_tools(),
+        "toolConfig": {
+            "functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": [fc_name],
+            }
+        },
+        "generationConfig": {"temperature": 0.2},
+    }
+    url = f"{GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, params={"key": GOOGLE_API_KEY}, json=body)
+        if resp.status_code != 200:
+            print(f"[chat] fix call HTTP {resp.status_code}", flush=True)
+            return None
+        data = resp.json()
+        for candidate in data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                if "functionCall" in part and part["functionCall"].get("name") == fc_name:
+                    return part["functionCall"].get("args", {})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[chat] fix call exception: {exc}", flush=True)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # /chat  (SSE streaming)
 # ---------------------------------------------------------------------------
 
@@ -358,7 +453,57 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 
             print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
 
-            # Emit completed tool calls
+            # Validate and auto-fix update_question / create_question calls
+            for i, fc in enumerate(function_calls):
+                name = fc.get("name", "")
+                args = fc.get("args", {})
+                if name not in ("update_question", "create_question"):
+                    continue
+                template = args.get("template", "")
+                python_code = args.get("python_code", "")
+                if not (template and python_code):
+                    continue
+
+                ok, err = _validate_question(template, python_code)
+                if ok:
+                    print(f"[chat] validation ok for {name}", flush=True)
+                    continue
+
+                print(f"[chat] validation failed for {name}: {err[:200]}", flush=True)
+                for fix_attempt in range(MAX_FIX_ATTEMPTS):
+                    print(f"[chat] fix attempt {fix_attempt + 1}/{MAX_FIX_ATTEMPTS}", flush=True)
+                    fixed_args = await _gemini_fix_call(
+                        system_text=system_text,
+                        contents=contents,
+                        fc_name=name,
+                        fc_args=args,
+                        error=err,
+                    )
+                    if fixed_args is None:
+                        print("[chat] fix call returned no function call", flush=True)
+                        break
+                    ok, err = _validate_question(
+                        fixed_args.get("template", template),
+                        fixed_args.get("python_code", python_code),
+                    )
+                    args = fixed_args
+                    function_calls[i] = {**fc, "args": fixed_args}
+                    if ok:
+                        print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
+                        break
+                    print(f"[chat] fix attempt {fix_attempt + 1} still failing: {err[:200]}", flush=True)
+
+                if not ok:
+                    yield {"data": json.dumps({
+                        "type": "text",
+                        "delta": (
+                            f"\n\n⚠️ *Warning: I could not verify this code runs without errors "
+                            f"after {MAX_FIX_ATTEMPTS} fix attempt(s). "
+                            f"Last error: `{err}`. Please review carefully before accepting.*"
+                        ),
+                    })}
+
+            # Emit (possibly fixed) tool calls
             for fc in function_calls:
                 name = fc.get("name", "")
                 args = fc.get("args", {})
