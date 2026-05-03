@@ -301,7 +301,10 @@
         <div id="preview-hdr">
           <span>👁 Preview</span>
           <button class="btn btn-primary" id="btn-preview" disabled style="font-size:11px;padding:2px 8px">▶ Preview</button>
-          <span id="preview-seed-label" style="font-weight:normal;color:#888;font-size:10.5px">seed: A=42</span>
+          <label style="font-weight:normal;color:#888;font-size:10.5px;display:flex;align-items:center;gap:4px">
+            seed: A=<input id="preview-seed-input" type="number" value="42" min="0" step="1"
+              style="width:56px;font-size:10.5px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background:#fff;color:#333">
+          </label>
         </div>
         <div id="preview-content" style="flex:1;padding:14px 18px;font-size:14px;line-height:1.6">
           <p style="color:#aaa;font-style:italic">Select a question and click ▶ Preview.</p>
@@ -1126,8 +1129,8 @@ function selectQuestion(qid) {
 }
 
 function updatePreviewSeedLabel() {
-  const lbl = document.getElementById("preview-seed-label");
-  if (lbl) lbl.textContent = `seed: A=${state.settings.seedA}`;
+  const inp = document.getElementById("preview-seed-input");
+  if (inp) inp.value = state.settings.seedA;
 }
 
 function showNoQuestion() {
@@ -1572,6 +1575,13 @@ async function main() {
   on("btn-import-sb",  doImportZip);
   on("btn-new-q",      doNewQuestion);
   on("btn-new-param",  doNewParam);
+
+  // Seed override input in preview header
+  document.getElementById("preview-seed-input")?.addEventListener("change", e => {
+    const v = parseInt(e.target.value, 10);
+    if (!isNaN(v) && v >= 0) { state.settings.seedA = v; debounceSave(); }
+    else e.target.value = state.settings.seedA; // revert invalid
+  });
   on("btn-reset", async () => {
     if (!confirm("Reset to default question bank? All local changes will be lost.")) return;
     try {
