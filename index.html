@@ -413,7 +413,7 @@
     <input type="text" id="ai-server-url" value="https://question-forge-server.fly.dev" placeholder="https://question-forge-server.fly.dev">
   </label>
   <label>Access Token (8 chars)
-    <input type="password" id="ai-token" maxlength="32" placeholder="••••••••" autocomplete="off">
+    <input type="password" id="ai-token" maxlength="32" value="phys1020" placeholder="••••••••" autocomplete="off">
   </label>
   <div style="display:flex;gap:6px;margin-top:4px">
     <button id="btn-ai-connect" style="flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">Connect</button>
@@ -1936,7 +1936,7 @@ async function main() {
 const aiState = {
   connected: false,
   url: "https://question-forge-server.fly.dev",
-  token: "",
+  token: "phys1020",
   systemPrompt: "",  // custom system prompt override (empty = use server default)
   messages: [],   // {role, content} conversation history sent to LLM
   chatLog: [],    // {role, html, toolBadges} display log — persisted in localStorage
