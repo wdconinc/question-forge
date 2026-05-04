@@ -63,7 +63,7 @@
     /* Main layout */
     #main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--sidebar-width) 1fr; overflow: hidden; transition: grid-template-columns 0.2s ease; }
     #main.sidebar-collapsed { grid-template-columns: 0 1fr; }
-    #main.sidebar-collapsed #sidebar { border-right: none; }
+    #main.sidebar-collapsed #sidebar { border-right: none; visibility: hidden; pointer-events: none; }
 
     /* Editor area */
     #editor-area { display: flex; flex-direction: row; overflow: hidden; flex: 1; position: relative; }
@@ -471,7 +471,7 @@
     <div id="sidebar-header">
       <button class="btn btn-primary" id="btn-new-q" style="flex:1;font-size:11px">+ New</button>
       <button class="btn btn-secondary" id="btn-import-sb" style="font-size:11px" title="Import from ZIP">⬆ Import</button>
-      <button id="btn-collapse-sidebar" title="Hide question list">◀</button>
+      <button type="button" id="btn-collapse-sidebar" title="Hide question list" aria-label="Hide question list" aria-expanded="true">◀</button>
     </div>
     <div id="question-list"></div>
   </div>
@@ -479,7 +479,7 @@
   <!-- Editor area (flex row: panels + optional chat panel) -->
   <div id="editor-area">
     <!-- Expander tab shown when sidebar is collapsed -->
-    <button id="sidebar-expander" title="Show question list">▶</button>
+    <button type="button" id="sidebar-expander" title="Show question list" aria-label="Show question list">▶</button>
     <!-- Left: all editor panels wrapped -->
     <div id="editor-panels-wrap">
       <!-- No question message (shown when nothing is selected) -->
@@ -1336,6 +1336,27 @@ function makeSidebarItem(q) {
   return div;
 }
 
+function setupSidebar() {
+  const main = document.getElementById("main");
+  const sidebar = document.getElementById("sidebar");
+  const btnCollapse = document.getElementById("btn-collapse-sidebar");
+  const btnExpander = document.getElementById("sidebar-expander");
+  function toggleSidebar() {
+    const collapsed = main.classList.toggle("sidebar-collapsed");
+    if (collapsed) {
+      sidebar.setAttribute("aria-hidden", "true");
+      sidebar.setAttribute("inert", "");
+    } else {
+      sidebar.removeAttribute("aria-hidden");
+      sidebar.removeAttribute("inert");
+    }
+    btnCollapse?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btnExpander?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+  btnCollapse?.addEventListener("click", toggleSidebar);
+  btnExpander?.addEventListener("click", toggleSidebar);
+}
+
 function setupSortable() {
   Sortable.create(document.getElementById("question-list"), {
     animation: 150, ghostClass: "sortable-ghost",
@@ -1943,6 +1964,7 @@ async function main() {
   applySettingsToUI();
   renderSidebar();
   setupSortable();
+  setupSidebar();
 
   if (state.selectedQuestion && state.questions[state.selectedQuestion]) {
     selectQuestion(state.selectedQuestion);
@@ -2623,12 +2645,6 @@ function setupAIChat() {
   on("btn-ai-test-stream", doTestStream);
   on("btn-ai-conn-close",  () => document.getElementById("ai-conn-popover").classList.remove("open"));
   on("btn-chat-send",      doSendChat);
-
-  function toggleSidebar() {
-    document.getElementById("main").classList.toggle("sidebar-collapsed");
-  }
-  on("btn-collapse-sidebar", toggleSidebar);
-  on("sidebar-expander",     toggleSidebar);
 
   // Enter key sends (Shift+Enter for newline)
   document.getElementById("chat-input")?.addEventListener("keydown", e => {
