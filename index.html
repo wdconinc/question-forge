@@ -2565,13 +2565,15 @@ async function doSendChat() {
 
   try {
     // First attempt — no bank summary, no requested question
+    let activeBankSummary = "";
     let { needsBank, neededQuestionId } = await _doRequest("", null);
 
     if (needsBank) {
       // AI requested the question bank: build it and retry transparently
       aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
       assistantText = "";
-      ({ needsBank, neededQuestionId } = await _doRequest(_buildBankSummary(), null));
+      activeBankSummary = _buildBankSummary();
+      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, null));
       if (needsBank) {
         console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
       }
@@ -2588,9 +2590,12 @@ async function doSendChat() {
           template: neededQ.template || "",
           python_code: neededQ.python_code || "",
         };
-        const result = await _doRequest("", requestedQuestion);
+        const result = await _doRequest(activeBankSummary, requestedQuestion);
         if (result.neededQuestionId) {
           console.warn("[AI] AI requested another question after one was already provided — ignoring.");
+        }
+        if (result.needsBank) {
+          console.warn("[AI] AI requested question bank after question was already provided — ignoring.");
         }
       } else {
         console.warn("[AI] AI requested unknown question:", neededQuestionId);
