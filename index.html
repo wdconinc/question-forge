@@ -2024,10 +2024,19 @@ function setAIDot(state) {
   dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
 }
 
+function _escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
-  el.innerHTML = html;
+  el.innerHTML = _escapeHtml(html);
   if (toolBadges && toolBadges.length) {
     for (const b of toolBadges) {
       const span = document.createElement("span");
