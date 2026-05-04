@@ -2344,7 +2344,7 @@ async function doSendChat() {
     }
 
     if (!res.ok) {
-      let detail = "";
+      let detail;
       try { const d = await res.json(); detail = d.detail || ""; } catch { detail = await res.text().catch(() => ""); }
       throw new Error(_classifyConnError(null, res.status, detail));
     }
