@@ -823,21 +823,23 @@ def render_paper(question_bank, question_order, meta, seed):
 
     for qid in question_order:
         q = question_bank[qid]
-        # Monkey-patch render_template BEFORE exec so from-import captures the patched version
-        _tpl = _j2.Environment(
-            trim_blocks=True, lstrip_blocks=True,
-            keep_trailing_newline=False,
-            undefined=_j2.StrictUndefined,
-        ).from_string(q["template"])
-        def _rt(name, params, _t=_tpl):
-            return _t.render(**params).strip()
         _orig_rt = _qmod.render_template
-        _qmod.render_template = _rt
         try:
+            # Monkey-patch render_template BEFORE exec so from-import captures the patched version
+            _tpl = _j2.Environment(
+                trim_blocks=True, lstrip_blocks=True,
+                keep_trailing_newline=False,
+                undefined=_j2.StrictUndefined,
+            ).from_string(q["template"])
+            def _rt(name, params, _t=_tpl):
+                return _t.render(**params).strip()
+            _qmod.render_template = _rt
             ns = {}
             exec(compile(q["python_code"], qid + ".py", "exec"), ns)
             q_rng = np.random.default_rng(rng.integers(0, 2**63))
             data_orig.append(ns["generate"](q_rng))
+        except Exception as exc:
+            raise RuntimeError(f"QUESTION_ERROR\n{qid}\n{exc}") from exc
         finally:
             _qmod.render_template = _orig_rt
 
@@ -1626,8 +1628,34 @@ json.dumps({"md": _md, "answers": _ans})
     toast("Render complete \u2713", "success");
     showRenderOverlay(papers[0]);
   } catch (e) {
-    toast("Error: " + (e.message || e), "error");
     console.error(e);
+    const raw = e.message || String(e);
+    // Check for tagged question errors: "QUESTION_ERROR\n<qid>\n<detail>"
+    // Use search (not anchored match) because Pyodide prepends a Python traceback to the message.
+    const m = raw.match(/QUESTION_ERROR\n([^\n]+)\n(.*)$/s);
+    if (m) {
+      const failQid = m[1];
+      const detail  = m[2];
+      // Navigate to the failing question so the user can see and fix it
+      if (state.questions[failQid]) {
+        selectQuestion(failQid);
+        // Show the error in the preview panel with Fix-with-AI button
+        const errorMsg = `Render All failed for question "${failQid}":\n${detail}`;
+        lastPreviewError = errorMsg;
+        document.getElementById("preview-content").innerHTML =
+          `<div class="error-box-wrap">` +
+          `<div class="error-box">${escHtml(errorMsg)}</div>` +
+          `<button class="btn-fix-ai" id="btn-fix-error-ai" aria-label="Fix preview error with AI">\uD83E\uDD16 Fix with AI</button>` +
+          `</div>`;
+        updateFixAIButton();
+        document.getElementById("btn-fix-error-ai")?.addEventListener("click", doFixWithAI);
+        toast(`Render error in "${failQid}" \u2014 see Preview`, "error");
+      } else {
+        toast("Render error: " + detail, "error");
+      }
+    } else {
+      toast("Error: " + raw, "error");
+    }
   } finally {
     setProgress(0); btn.disabled = false; btn.textContent = "\u25b6 Render All";
   }
