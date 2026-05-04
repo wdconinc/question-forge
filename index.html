@@ -2082,6 +2082,8 @@ function typesetMath(el) {
   }
 }
 
+// Caller is responsible for HTML-escaping any untrusted content in `html`
+// (e.g. use escHtml()) before passing it in, as it is assigned directly to innerHTML.
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
@@ -2159,7 +2161,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     if (!res.ok) {
@@ -2169,7 +2171,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     const data = await res.json();
@@ -2183,13 +2185,13 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
     updateFixAIButton();
-    if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(data.model || "?")}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
     statusEl.textContent = "✗ " + msg;
     statusEl.style.color = "#c62828";
     setAIDot("error");
-    if (!silent) appendChatMsg("system-note", `⚠ ${msg}`);
+    if (!silent) appendChatMsg("system-note", `⚠ ${escHtml(msg)}`);
   }
 }
 
@@ -2229,7 +2231,7 @@ function startHealthCheck() {
         const msg = _classifyConnError(e instanceof TypeError ? e : null,
                                        e.message?.match(/HTTP (\d+)/)?.[1]);
         markAIDisconnected("Server unreachable.");
-        appendChatMsg("system-note", `⚠ Lost connection: ${msg}`);
+        appendChatMsg("system-note", `⚠ Lost connection: ${escHtml(msg)}`);
       }
     }
   }, 15000);
@@ -2276,6 +2278,21 @@ async function doTestStream() {
 }
 
 
+function _buildBankSummary() {
+  if (!state || !state.questionOrder || !state.questions) return "";
+  const lines = [];
+  state.questionOrder.forEach((qid, idx) => {
+    const q = state.questions[qid];
+    if (!q) return;
+    lines.push(`[${idx + 1}] ${qid}${q.topic ? " — " + q.topic : ""}`);
+    if (q.template && q.template.trim()) {
+      lines.push("  Template: " + q.template.trim().replace(/\n/g, " "));
+    }
+  });
+  return lines.join("\n");
+}
+
+
 async function doSendChat() {
   const input = document.getElementById("chat-input");
   const text = input.value.trim();
@@ -2288,7 +2305,7 @@ async function doSendChat() {
 
   // Build a concise summary of questions already in the bank (capped to avoid oversized prompts)
   const BANK_SUMMARY_LIMIT = 80;
-  const bankSummary = state.questionOrder.slice(0, BANK_SUMMARY_LIMIT).map(id => {
+  const questionBankSummary = state.questionOrder.slice(0, BANK_SUMMARY_LIMIT).map(id => {
     const q = state.questions[id]; if (!q) return null;
     return `- ${id}: ${q.title || id}${q.topic ? ` (topic: ${q.topic})` : ""}`;
   }).filter(Boolean).join("\n") +
@@ -2308,10 +2325,12 @@ async function doSendChat() {
   aEl.scrollIntoView({behavior: "smooth"});
   document.getElementById("btn-chat-send").disabled = true;
 
-  let assistantText = "";
   let createCount = 0;
 
-  try {
+  // Inner function: performs one fetch+stream attempt with the given bankSummary.
+  // Returns true if the AI requested the question bank (caller should retry with
+  // the bank summary), false when the turn is complete.
+  const _doRequest = async (bankSummary) => {
     const _chatAbort = new AbortController();
     const _chatTimeout = setTimeout(() => _chatAbort.abort(new Error("Request timed out after 90s")), 90000);
     let res;
@@ -2328,8 +2347,9 @@ async function doSendChat() {
           template, python_code: pythonCode, question_id: qid,
           system_prompt: aiState.systemPrompt || "",
           question_set_prompt: state?.settings?.questionSetPrompt || "",
+          bank_summary: bankSummary,
           preview_error: lastPreviewError || "",
-          question_bank_summary: bankSummary,
+          question_bank_summary: questionBankSummary,
         }),
       });
     } finally {
@@ -2337,7 +2357,7 @@ async function doSendChat() {
     }
 
     if (!res.ok) {
-      let detail = "";
+      let detail;
       try { const d = await res.json(); detail = d.detail || ""; } catch { detail = await res.text().catch(() => ""); }
       throw new Error(_classifyConnError(null, res.status, detail));
     }
@@ -2347,6 +2367,7 @@ async function doSendChat() {
     const decoder = new TextDecoder();
     let buf = "";
     let streamDone = false;
+    let needsBankSummary = false;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -2374,41 +2395,52 @@ async function doSendChat() {
             aEl.scrollIntoView({ behavior: "smooth" });
 
           } else if (evt.type === "tool_call") {
-            let changes = [];
-            if (evt.tool === "update_question") {
-              if (evt.template !== undefined)
-                changes.push({ tool: "update_template", label: "Jinja2 template",
-                  oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template ?? "" });
-              if (evt.python_code !== undefined)
-                changes.push({ tool: "update_python", label: "Python generator",
-                  oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code ?? "" });
-            } else if (evt.tool === "create_question") {
-              showCreateCard({
-                question_id: evt.question_id,
-                title: evt.title || evt.question_id,
-                topic: evt.topic || "",
-                template: evt.template || "",
-                python_code: evt.python_code || "",
-              });
-              createCount++;
-              aEl.innerHTML = createCount > 1
-                ? `<span style="color:#2e7d32">✓ Proposing ${createCount} new questions — see cards below ↓</span>`
-                : `<span style="color:#2e7d32">✓ Proposing new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
-              changes = [];
-            } else if (evt.tool === "update_template") {
-              changes.push({ tool: "update_template", label: "Jinja2 template",
-                oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.content ?? "" });
-            } else if (evt.tool === "update_python") {
-              changes.push({ tool: "update_python", label: "Python generator",
-                oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.content ?? "" });
+          if (evt.tool === "get_question_bank") {
+              console.log("[AI] AI requested question bank — aborting stream and retrying with bank summary");
+              needsBankSummary = true;
+              // Cancel the reader immediately so no further events from this
+              // response are processed (prevents side-effects from any tool
+              // calls or text the model may have also emitted).
+              reader.cancel();
+              streamDone = true;
+              break;
             } else {
-              console.warn("[AI] unknown tool call:", evt.tool, evt);
-              aEl.innerHTML = `<span style="color:#e65100">⚠ Unknown tool call: ${escHtml(evt.tool)}</span>`;
-            }
-            if (changes.length) {
-              showDiffCard(changes);
-              const toolLabel = changes.map(c => c.label).join(" + ");
-              aEl.innerHTML = `<span style="color:#2e7d32">✓ Proposing ${escHtml(toolLabel)} update — see diff card below ↓</span>`;
+              let changes = [];
+              if (evt.tool === "update_question") {
+                if (evt.template !== undefined)
+                  changes.push({ tool: "update_template", label: "Jinja2 template",
+                    oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.template ?? "" });
+                if (evt.python_code !== undefined)
+                  changes.push({ tool: "update_python", label: "Python generator",
+                    oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.python_code ?? "" });
+              } else if (evt.tool === "create_question") {
+                showCreateCard({
+                  question_id: evt.question_id,
+                  title: evt.title || evt.question_id,
+                  topic: evt.topic || "",
+                  template: evt.template || "",
+                  python_code: evt.python_code || "",
+                });
+                createCount++;
+                aEl.innerHTML = createCount > 1
+                  ? `<span style="color:#2e7d32">✓ Proposing ${createCount} new questions — see cards below ↓</span>`
+                  : `<span style="color:#2e7d32">✓ Proposing new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
+                changes = [];
+              } else if (evt.tool === "update_template") {
+                changes.push({ tool: "update_template", label: "Jinja2 template",
+                  oldContent: templateEditor ? templateEditor.getValue() : "", newContent: evt.content ?? "" });
+              } else if (evt.tool === "update_python") {
+                changes.push({ tool: "update_python", label: "Python generator",
+                  oldContent: pythonEditor ? pythonEditor.getValue() : "", newContent: evt.content ?? "" });
+              } else {
+                console.warn("[AI] unknown tool call:", evt.tool, evt);
+                aEl.innerHTML = `<span style="color:#e65100">⚠ Unknown tool call: ${escHtml(evt.tool)}</span>`;
+              }
+              if (changes.length) {
+                showDiffCard(changes);
+                const toolLabel = changes.map(c => c.label).join(" + ");
+                aEl.innerHTML = `<span style="color:#2e7d32">✓ Proposing ${escHtml(toolLabel)} update — see diff card below ↓</span>`;
+              }
             }
 
           } else if (evt.type === "error") {
@@ -2424,6 +2456,25 @@ async function doSendChat() {
           console.error("Error processing SSE event:", evt, evtErr);
           aEl.innerHTML += `<br><span style="color:#c62828;font-size:11px">${escHtml(evtErr.message)}</span>`;
         }
+      }
+    }
+
+    return needsBankSummary;
+  };
+
+  let assistantText = "";
+
+  try {
+    // First attempt — no bank summary
+    const needsBank = await _doRequest("");
+
+    if (needsBank) {
+      // AI requested the question bank: build it and retry transparently
+      aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
+      assistantText = "";
+      const stillNeedsBank = await _doRequest(_buildBankSummary());
+      if (stillNeedsBank) {
+        console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
       }
     }
 
