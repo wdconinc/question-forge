@@ -1514,7 +1514,7 @@ json.dumps({
     document.getElementById("preview-content").innerHTML =
       `<div class="error-box-wrap">` +
       `<div class="error-box">${escHtml(errorMsg)}</div>` +
-      `<button class="btn-fix-ai" id="btn-fix-error-ai"${connected ? "" : ' disabled title="Connect AI first"'}>🤖 Fix with AI</button>` +
+      `<button class="btn-fix-ai" id="btn-fix-error-ai" aria-label="Fix preview error with AI"${connected ? "" : ' disabled title="Connect AI first"'}>🤖 Fix with AI</button>` +
       `</div>`;
     document.getElementById("btn-fix-error-ai")?.addEventListener("click", doFixWithAI);
   }
@@ -1559,9 +1559,10 @@ function doFixWithAI() {
     saveAIState();
   }
 
-  // Pre-fill the input and auto-send a focused fix request
+  // Pre-fill the input and auto-send a focused fix request.
+  // The full error is already included in the request as preview_error.
   const input = document.getElementById("chat-input");
-  input.value = `Fix this preview error:\n\`\`\`\n${lastPreviewError}\n\`\`\``;
+  input.value = "Fix the preview error shown in the preview panel.";
   doSendChat();
 }
 
