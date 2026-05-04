@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QuestionForge — PHYS 1020 Exam Authoring</title>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     :root { --sidebar-width: 240px; }
@@ -2201,7 +2202,8 @@ function typesetMath(el) {
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
-  el.innerHTML = html;
+  const safeHtml = DOMPurify.sanitize(String(html ?? ""));
+  el.innerHTML = safeHtml;
   if (toolBadges && toolBadges.length) {
     for (const b of toolBadges) {
       const span = document.createElement("span");
@@ -2215,7 +2217,7 @@ function appendChatMsg(role, html, toolBadges, skipLog) {
   el.scrollIntoView({ behavior: "smooth" });
   typesetMath(el);
   if (!skipLog) {
-    aiState.chatLog.push({ role, html, toolBadges: toolBadges || [] });
+    aiState.chatLog.push({ role, html: safeHtml, toolBadges: toolBadges || [] });
     saveAIState();
   }
   return el;
