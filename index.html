@@ -318,6 +318,14 @@
       font-family: "SF Mono", Consolas, monospace; font-size: 12px;
       white-space: pre-wrap; color: #b71c1c;
     }
+    .error-box-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .btn-fix-ai {
+      align-self: flex-start; padding: 3px 10px; background: #1e3a5f; color: white;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 11.5px;
+      font-weight: 600; transition: background 0.15s;
+    }
+    .btn-fix-ai:hover:not(:disabled) { background: #2a5298; }
+    .btn-fix-ai:disabled { opacity: 0.45; cursor: not-allowed; }
 
     /* No question placeholder */
     #no-q-msg {
@@ -1217,6 +1225,7 @@ let pyodideReady = false;
 let templateEditor = null;
 let pythonEditor = null;
 let saveTimer = null;
+let lastPreviewError = null;   // tracks the most recent preview error (null = no error / success)
 
 // ── State persistence ──────────────────────────────────────────────────────
 function loadState() {
@@ -1499,12 +1508,20 @@ json.dumps({
 `);
     renderPreview(JSON.parse(resultJson));
   } catch (e) {
+    const errorMsg = e.message || String(e);
+    lastPreviewError = errorMsg;
+    const connected = aiState.connected;
     document.getElementById("preview-content").innerHTML =
-      `<div class="error-box">${escHtml(e.message || String(e))}</div>`;
+      `<div class="error-box-wrap">` +
+      `<div class="error-box">${escHtml(errorMsg)}</div>` +
+      `<button class="btn-fix-ai" id="btn-fix-error-ai"${connected ? "" : ' disabled title="Connect AI first"'}>🤖 Fix with AI</button>` +
+      `</div>`;
+    document.getElementById("btn-fix-error-ai")?.addEventListener("click", doFixWithAI);
   }
 }
 
 function renderPreview(data) {
+  lastPreviewError = null;   // successful render — no error to report
   let md = data.question + "\n\n";
   for (let i = 0; i < 5; i++) {
     md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
@@ -1525,6 +1542,27 @@ function escHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ── Fix-with-AI shortcut ───────────────────────────────────────────────────
+function doFixWithAI() {
+  if (!lastPreviewError) return;
+  if (!aiState.connected) { toast("Connect AI first", "error"); return; }
+
+  // Open chat panel if not already open
+  const panel  = document.getElementById("chat-panel");
+  const rzChat = document.getElementById("rsz-chat");
+  if (!panel.classList.contains("open")) {
+    panel.classList.add("open");
+    rzChat.style.display = "";
+    aiState.panelOpen = true;
+    saveAIState();
+  }
+
+  // Pre-fill the input and auto-send a focused fix request
+  const input = document.getElementById("chat-input");
+  input.value = `Fix this preview error:\n\`\`\`\n${lastPreviewError}\n\`\`\``;
+  doSendChat();
 }
 
 // ── Render All ─────────────────────────────────────────────────────────────
@@ -2256,6 +2294,7 @@ async function doSendChat() {
           template, python_code: pythonCode, question_id: qid,
           system_prompt: aiState.systemPrompt || "",
           question_set_prompt: state?.settings?.questionSetPrompt || "",
+          preview_error: lastPreviewError || "",
         }),
       });
     } finally {

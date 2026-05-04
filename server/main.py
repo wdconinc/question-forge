@@ -130,6 +130,7 @@ class ChatRequest(BaseModel):
     question_id: str = ""
     system_prompt: str = ""       # optional override for the base system prompt
     question_set_prompt: str = "" # optional per-exam context appended to system prompt
+    preview_error: str = ""       # current error shown in the preview panel (if any)
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -239,6 +240,14 @@ Current question ID: {qid}
         prompt += f"""
 === QUESTION SET CONTEXT ===
 {req.question_set_prompt.strip()}
+"""
+    if req.preview_error.strip():
+        prompt += f"""
+=== CURRENT PREVIEW ERROR ===
+The question currently fails to preview with this error:
+{req.preview_error.strip()}
+
+Please fix the template and/or python_code so the preview runs without errors.
 """
     return prompt
 
