@@ -278,6 +278,11 @@ When the user asks to create more than one question:
   and wait for their answer before proceeding.
 - When creating multiple questions, vary difficulty levels and sub-topics to produce a
   balanced set, and avoid duplicating topics already present in the existing question bank.
+- Each new question **must** have a unique `question_id` that does not already exist in the
+  bank. Use a descriptive snake_case name, e.g. `q_friction_ramp`. If the bank listing is
+  provided, check it and choose IDs that are not already there. The `python_code` must call
+  `render_template` with the **exact same** `question_id` string you provide in this call,
+  because the template file is stored under that name on disk.
 """
 
 def _system_prompt(req: ChatRequest) -> str:

@@ -2286,11 +2286,15 @@ async function doSendChat() {
   const template   = templateEditor ? templateEditor.getValue() : "";
   const pythonCode = pythonEditor   ? pythonEditor.getValue()   : "";
 
-  // Build a concise summary of all questions already in the bank
-  const bankSummary = state.questionOrder.map(id => {
+  // Build a concise summary of questions already in the bank (capped to avoid oversized prompts)
+  const BANK_SUMMARY_LIMIT = 80;
+  const bankSummary = state.questionOrder.slice(0, BANK_SUMMARY_LIMIT).map(id => {
     const q = state.questions[id]; if (!q) return null;
-    return `- ${id}: ${escHtml(q.title || id)}${q.topic ? ` (topic: ${escHtml(q.topic)})` : ""}`;
-  }).filter(Boolean).join("\n");
+    return `- ${id}: ${q.title || id}${q.topic ? ` (topic: ${q.topic})` : ""}`;
+  }).filter(Boolean).join("\n") +
+    (state.questionOrder.length > BANK_SUMMARY_LIMIT
+      ? `\n… (${state.questionOrder.length - BANK_SUMMARY_LIMIT} more questions not shown)`
+      : "");
 
   // Add user message to history and UI
   aiState.messages.push({ role: "user", content: text });
