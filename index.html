@@ -2564,43 +2564,54 @@ async function doSendChat() {
   let assistantText = "";
 
   try {
-    // First attempt — no bank summary, no requested question
+    // Retry loop: the AI may request the question bank or a specific question
+    // before it has enough context to respond.  We honour both signals in any
+    // order, up to MAX_TOOL_RETRIES total retries.
+    const MAX_TOOL_RETRIES = 3;
     let activeBankSummary = "";
+    let requestedQuestion = null;
+    let retries = 0;
+
     let { needsBank, neededQuestionId } = await _doRequest("", null);
 
-    if (needsBank) {
-      // AI requested the question bank: build it and retry transparently
-      aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
-      assistantText = "";
-      activeBankSummary = _buildBankSummary();
-      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, null));
-      if (needsBank) {
-        console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
-      }
-    }
+    while ((needsBank || neededQuestionId) && retries < MAX_TOOL_RETRIES) {
+      retries++;
 
-    if (neededQuestionId) {
-      // AI requested a specific non-active question: look it up and retry
-      const neededQ = state?.questions?.[neededQuestionId];
-      if (neededQ) {
+      if (needsBank) {
+        if (activeBankSummary) {
+          console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
+          break;
+        }
+        aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
+        assistantText = "";
+        activeBankSummary = _buildBankSummary();
+      }
+
+      if (neededQuestionId) {
+        if (requestedQuestion?.question_id === neededQuestionId) {
+          console.warn("[AI] AI requested the same question again after it was already provided — ignoring.");
+          break;
+        }
+        const neededQ = state?.questions?.[neededQuestionId];
+        if (!neededQ) {
+          console.warn("[AI] AI requested unknown question:", neededQuestionId);
+          aEl.innerHTML = `<span style="color:#e65100">⚠ AI requested question <b>${escHtml(neededQuestionId)}</b> which does not exist in the bank.</span>`;
+          break;
+        }
         aEl.innerHTML = `<span style="color:#aaa">Fetching question <b>${escHtml(neededQuestionId)}</b>…</span>`;
         assistantText = "";
-        const requestedQuestion = {
+        requestedQuestion = {
           question_id: neededQuestionId,
           template: neededQ.template || "",
           python_code: neededQ.python_code || "",
         };
-        const result = await _doRequest(activeBankSummary, requestedQuestion);
-        if (result.neededQuestionId) {
-          console.warn("[AI] AI requested another question after one was already provided — ignoring.");
-        }
-        if (result.needsBank) {
-          console.warn("[AI] AI requested question bank after question was already provided — ignoring.");
-        }
-      } else {
-        console.warn("[AI] AI requested unknown question:", neededQuestionId);
-        aEl.innerHTML = `<span style="color:#e65100">⚠ AI requested question <b>${escHtml(neededQuestionId)}</b> which does not exist in the bank.</span>`;
       }
+
+      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, requestedQuestion));
+    }
+
+    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId)) {
+      console.warn("[AI] reached max tool retries without completing the turn.");
     }
 
     // Only show fallback if NEITHER text nor a tool-call updated the bubble

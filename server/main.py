@@ -666,6 +666,10 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
                     continue
                 if name == "get_question":
+                    if req.requested_question_id.strip():
+                        # Question is already in the system prompt; suppress to avoid loops
+                        print("[chat] suppressing get_question — requested_question already provided", flush=True)
+                        continue
                     # Signal the browser to provide the question data and retry
                     requested_id = args.get("question_id", "")
                     print(f"[chat] AI requested get_question: {requested_id}", flush=True)
