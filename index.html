@@ -2286,6 +2286,12 @@ async function doSendChat() {
   const template   = templateEditor ? templateEditor.getValue() : "";
   const pythonCode = pythonEditor   ? pythonEditor.getValue()   : "";
 
+  // Build a concise summary of all questions already in the bank
+  const bankSummary = state.questionOrder.map(id => {
+    const q = state.questions[id]; if (!q) return null;
+    return `- ${id}: ${escHtml(q.title || id)}${q.topic ? ` (topic: ${escHtml(q.topic)})` : ""}`;
+  }).filter(Boolean).join("\n");
+
   // Add user message to history and UI
   aiState.messages.push({ role: "user", content: text });
   appendChatMsg("user", escHtml(text));
@@ -2299,6 +2305,7 @@ async function doSendChat() {
   document.getElementById("btn-chat-send").disabled = true;
 
   let assistantText = "";
+  let createCount = 0;
 
   try {
     const _chatAbort = new AbortController();
@@ -2318,6 +2325,7 @@ async function doSendChat() {
           system_prompt: aiState.systemPrompt || "",
           question_set_prompt: state?.settings?.questionSetPrompt || "",
           preview_error: lastPreviewError || "",
+          question_bank_summary: bankSummary,
         }),
       });
     } finally {
@@ -2378,7 +2386,10 @@ async function doSendChat() {
                 template: evt.template || "",
                 python_code: evt.python_code || "",
               });
-              aEl.innerHTML = `<span style="color:#2e7d32">✓ Creating new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
+              createCount++;
+              aEl.innerHTML = createCount > 1
+                ? `<span style="color:#2e7d32">✓ Proposing ${createCount} new questions — see cards below ↓</span>`
+                : `<span style="color:#2e7d32">✓ Proposing new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
               changes = [];
             } else if (evt.tool === "update_template") {
               changes.push({ tool: "update_template", label: "Jinja2 template",
