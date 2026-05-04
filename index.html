@@ -517,7 +517,7 @@
       <span id="arr-qs-prompt">▶</span> Question Set Context
     </div>
     <div class="ai-prompt-section-body collapsed" id="body-qs-prompt">
-      <label style="font-weight:400;color:#555;font-size:11px">Context prompt for the active question set (synced with sidebar):
+      <label style="font-weight:400;color:#555;font-size:11px">Context prompt for the selected question set (synced with sidebar):
         <textarea id="ai-qs-prompt" rows="5" placeholder="e.g. This is a 30-question final exam for PHYS 1020. Topics include kinematics, forces, energy…"></textarea>
       </label>
     </div>
@@ -1284,12 +1284,11 @@ function loadState() {
     if (raw) {
       const p = JSON.parse(raw);
       // Extract legacy questionSetPrompt before merging settings
-      const legacyPrompt = (p.settings || {}).questionSetPrompt || "";
-      const cleanSettings = { ...DEFAULT_SETTINGS, ...(p.settings || {}) };
-      delete cleanSettings.questionSetPrompt;
+      const { questionSetPrompt: legacyPrompt = "", ...mergedSettings } =
+        { ...DEFAULT_SETTINGS, ...(p.settings || {}) };
 
       state = {
-        settings: cleanSettings,
+        settings: mergedSettings,
         questions: p.questions || {},
         selectedQuestion: p.selectedQuestion || null,
         questionSets: [],
@@ -1774,7 +1773,7 @@ def generate(rng: np.random.Generator) -> dict:
 
 function doNewSet() {
   const name = prompt("Name for the new question set:") || "Question Set";
-  const id = "set_" + String(Date.now()).slice(-8);
+  const id = "set_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
   const newSet = {
     id, name: name.trim() || "Question Set",
     prompt: "", enabled: true, questionOrder: [], collapsed: false,
@@ -2129,7 +2128,7 @@ async function doImportZip() {
       let targetSet = state.questionSets.find(s => s.id === state.selectedSet) ||
                       state.questionSets[0];
       if (!targetSet) {
-        const id = "set_" + String(Date.now()).slice(-8);
+        const id = "set_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
         targetSet = { id, name: "Imported Set", prompt: "", enabled: true, questionOrder: [], collapsed: false };
         state.questionSets.push(targetSet);
         state.selectedSet = id;
