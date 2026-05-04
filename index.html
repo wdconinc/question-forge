@@ -2319,8 +2319,14 @@ async function doSendChat() {
 
           } else if (evt.type === "tool_call") {
             if (evt.tool === "get_question_bank") {
-              console.log("[AI] AI requested question bank — will retry with bank summary");
+              console.log("[AI] AI requested question bank — aborting stream and retrying with bank summary");
               needsBankSummary = true;
+              // Cancel the reader immediately so no further events from this
+              // response are processed (prevents side-effects from any tool
+              // calls or text the model may have also emitted).
+              reader.cancel();
+              streamDone = true;
+              break;
             } else {
               let changes = [];
               if (evt.tool === "update_question") {

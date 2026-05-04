@@ -541,6 +541,10 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                 name = fc.get("name", "")
                 args = fc.get("args", {})
                 if name == "get_question_bank":
+                    if req.bank_summary.strip():
+                        # Bank is already in the system prompt; suppress to avoid loops
+                        print("[chat] suppressing get_question_bank — bank_summary already provided", flush=True)
+                        continue
                     # Signal the browser to provide the bank summary and retry
                     print("[chat] AI requested get_question_bank", flush=True)
                     yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
