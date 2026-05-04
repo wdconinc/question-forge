@@ -2108,7 +2108,7 @@ function loadAIState() {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
     if (s.url)     aiState.url     = s.url;
     if (s.token)   aiState.token   = s.token;
-    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") aiState.systemPrompt = s.systemPrompt;
+    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") aiState.systemPrompt = s.systemPrompt.trim();
     if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
     if (typeof s.panelOpen === "boolean") aiState.panelOpen = s.panelOpen;
     if (typeof s.panelWidth === "number") aiState.panelWidth = s.panelWidth;
