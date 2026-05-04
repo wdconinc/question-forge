@@ -111,6 +111,55 @@
     .sidebar-item input[type="checkbox"] { flex-shrink: 0; cursor: pointer; accent-color: #f0ab00; }
     .sortable-ghost { opacity: 0.4; background: #c8d8f0; }
 
+    /* Question set groups */
+    .set-group { margin-bottom: 3px; }
+    .set-hdr {
+      display: flex; align-items: center; gap: 3px;
+      padding: 4px 5px; background: #e0e3ea; border-radius: 4px;
+      font-size: 12px; font-weight: 600; color: #333;
+      border: 1px solid #c8ccd6; user-select: none;
+    }
+    .set-expand-btn {
+      background: none; border: none; cursor: pointer; font-size: 10px;
+      padding: 0 2px; color: #666; flex-shrink: 0; line-height: 1;
+    }
+    .set-expand-btn:hover { color: #1e3a5f; }
+    .set-enabled-check { flex-shrink: 0; cursor: pointer; accent-color: #f0ab00; margin: 0; }
+    .set-name {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      cursor: pointer; padding: 0 2px;
+    }
+    .set-name:hover { color: #1e3a5f; text-decoration: underline dotted; }
+    .set-name-input {
+      flex: 1; font-size: 12px; font-weight: 600; color: #333;
+      border: 1px solid #1e3a5f; border-radius: 3px; padding: 1px 4px;
+      background: white; outline: none; min-width: 0;
+    }
+    .set-actions { display: flex; gap: 1px; flex-shrink: 0; }
+    .set-btn {
+      background: none; border: none; cursor: pointer; font-size: 11px;
+      padding: 0 3px; opacity: 0.45; transition: opacity 0.1s; line-height: 1;
+      border-radius: 2px; color: inherit;
+    }
+    .set-btn:hover { opacity: 1; background: rgba(0,0,0,0.08); }
+    .set-questions { padding: 2px 0 2px 6px; }
+    .set-questions.collapsed { display: none; }
+    .set-prompt-row {
+      padding: 4px 6px; background: #f0f1f5; border-radius: 3px;
+      border: 1px solid #ddd; margin: 1px 0 2px; display: none;
+    }
+    .set-prompt-row.open { display: block; }
+    .set-prompt-label { font-size: 10px; color: #666; margin-bottom: 3px; }
+    .set-prompt-textarea {
+      width: 100%; font-size: 11px; font-family: inherit;
+      border: 1px solid #ccc; border-radius: 3px; padding: 3px 5px;
+      resize: vertical; min-height: 50px; box-sizing: border-box; color: #333;
+    }
+    .set-prompt-textarea:focus { outline: none; border-color: #1e3a5f; }
+    .set-no-questions {
+      padding: 3px 6px; color: #aaa; font-size: 11px; font-style: italic;
+    }
+
     /* Editor panels */
     .ep { display: flex; flex-direction: column; overflow: hidden; }
     .ep-hdr {
@@ -470,7 +519,7 @@
       <span id="arr-qs-prompt">▶</span> Question Set Context
     </div>
     <div class="ai-prompt-section-body collapsed" id="body-qs-prompt">
-      <label style="font-weight:400;color:#555;font-size:11px">Additional context about this exam/question set (saved with the question set):
+      <label style="font-weight:400;color:#555;font-size:11px">Context prompt for the selected question set (synced with sidebar):
         <textarea id="ai-qs-prompt" rows="5" placeholder="e.g. This is a 30-question final exam for PHYS 1020. Topics include kinematics, forces, energy…"></textarea>
       </label>
     </div>
@@ -482,7 +531,7 @@
   <!-- Sidebar -->
   <div id="sidebar">
     <div id="sidebar-header">
-      <button class="btn btn-primary" id="btn-new-q" style="flex:1;font-size:11px">+ New</button>
+      <button class="btn btn-primary" id="btn-new-set" style="flex:1;font-size:11px">+ New Set</button>
       <button class="btn btn-secondary" id="btn-import-sb" style="font-size:11px" title="Import from ZIP">⬆ Import</button>
       <button type="button" id="btn-collapse-sidebar" title="Hide question list" aria-label="Hide question list" aria-expanded="true">◀</button>
     </div>
@@ -1220,7 +1269,6 @@ const DEFAULT_SETTINGS = {
   duration: "3 hours", examiners: "W. Deconinck",
   seedA: 42, seedB: 137, seedC: 271,
   papers: ["A", "B"], numQuestions: 30,
-  questionSetPrompt: "This exam is for an algebra-based introductory physics course (OpenStax College Physics 2e).",
 };
 
 let state = null;
@@ -1237,20 +1285,47 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const p = JSON.parse(raw);
+      // Extract legacy questionSetPrompt before merging settings
+      const { questionSetPrompt: legacyPrompt = "", ...mergedSettings } =
+        { ...DEFAULT_SETTINGS, ...(p.settings || {}) };
+
       state = {
-        settings: { ...DEFAULT_SETTINGS, ...(p.settings || {}) },
-        questionOrder: p.questionOrder || [],
+        settings: mergedSettings,
         questions: p.questions || {},
         selectedQuestion: p.selectedQuestion || null,
+        questionSets: [],
+        selectedSet: null,
       };
-      // Migration: if questionSetPrompt was the old default (empty string), apply the new default.
-      if (state.settings.questionSetPrompt === "") {
-        state.settings.questionSetPrompt = DEFAULT_SETTINGS.questionSetPrompt;
+
+      if (p.questionSets && Array.isArray(p.questionSets)) {
+        // New format
+        state.questionSets = p.questionSets;
+        state.selectedSet = p.selectedSet || (p.questionSets[0]?.id ?? null);
+      } else if (p.questionOrder) {
+        // Migrate old flat format to a single default set.
+        // If legacyPrompt is empty, fall back to the OpenStax default from PR#15.
+        const defaultPrompt = legacyPrompt ||
+          "This exam is for an algebra-based introductory physics course (OpenStax College Physics 2e).";
+        state.questionSets = [{
+          id: "set_default",
+          name: "Question Set",
+          prompt: defaultPrompt,
+          enabled: true,
+          questionOrder: p.questionOrder,
+          collapsed: false,
+        }];
+        state.selectedSet = "set_default";
       }
       return true;
     }
   } catch (e) { console.warn("loadState:", e); }
-  state = { settings: { ...DEFAULT_SETTINGS }, questionOrder: [], questions: {}, selectedQuestion: null };
+  state = {
+    settings: { ...DEFAULT_SETTINGS },
+    questionSets: [],
+    questions: {},
+    selectedQuestion: null,
+    selectedSet: null,
+  };
   return false;
 }
 
@@ -1314,14 +1389,254 @@ function hideOverlay() {
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────────────
+function findSetForQuestion(qid) {
+  return state.questionSets.find(s => s.questionOrder.includes(qid)) ?? null;
+}
+
+function syncQsPromptPopover() {
+  const qsEl = document.getElementById("ai-qs-prompt");
+  if (!qsEl) return;
+  const set = state.questionSets.find(s => s.id === state.selectedSet);
+  qsEl.value = set ? (set.prompt || "") : "";
+}
+
 function renderSidebar() {
   const list = document.getElementById("question-list");
   list.innerHTML = "";
-  for (const qid of state.questionOrder) {
-    const q = state.questions[qid];
-    if (!q) continue;
-    list.appendChild(makeSidebarItem(q));
+
+  if (!state.questionSets || state.questionSets.length === 0) {
+    list.innerHTML =
+      '<div style="padding:14px 8px;color:#aaa;font-size:12px;text-align:center;font-style:italic">' +
+      'No question sets.<br>Click <b>+ New Set</b> to create one.</div>';
+    return;
   }
+
+  for (const set of state.questionSets) {
+    list.appendChild(makeSetGroup(set));
+  }
+}
+
+function makeSetGroup(set) {
+  const group = document.createElement("div");
+  group.className = "set-group";
+  group.dataset.setId = set.id;
+
+  // ── Header ──
+  const hdr = document.createElement("div");
+  hdr.className = "set-hdr";
+
+  const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
+  expandBtn.className = "set-expand-btn";
+  expandBtn.textContent = set.collapsed ? "\u25b6" : "\u25bc";
+  expandBtn.title = set.collapsed ? "Expand" : "Collapse";
+  expandBtn.setAttribute("aria-label", set.collapsed ? `Expand ${set.name}` : `Collapse ${set.name}`);
+
+  const enableCb = document.createElement("input");
+  enableCb.type = "checkbox";
+  enableCb.className = "set-enabled-check";
+  enableCb.checked = set.enabled !== false;
+  enableCb.title = "Include this set in exam render";
+
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "set-name";
+  nameSpan.textContent = set.name || "Question Set";
+  nameSpan.title = "Click to rename";
+  nameSpan.setAttribute("role", "button");
+  nameSpan.setAttribute("tabindex", "0");
+  nameSpan.setAttribute("aria-label", `Rename ${set.name || "Question Set"}`);
+
+  const actions = document.createElement("div");
+  actions.className = "set-actions";
+
+  const promptBtn = document.createElement("button");
+  promptBtn.type = "button";
+  promptBtn.className = "set-btn";
+  promptBtn.title = "Edit AI context prompt for this set";
+  promptBtn.setAttribute("aria-label", "Edit AI context prompt for this set");
+  promptBtn.textContent = "\ud83d\udcdd";
+
+  const addQBtn = document.createElement("button");
+  addQBtn.type = "button";
+  addQBtn.className = "set-btn";
+  addQBtn.title = "Add question to this set";
+  addQBtn.setAttribute("aria-label", "Add question to this set");
+  addQBtn.textContent = "+";
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "set-btn";
+  deleteBtn.title = "Delete this set";
+  deleteBtn.setAttribute("aria-label", `Delete set ${set.name || "Question Set"}`);
+  deleteBtn.textContent = "\ud83d\uddd1";
+
+  actions.append(promptBtn, addQBtn, deleteBtn);
+  hdr.append(expandBtn, enableCb, nameSpan, actions);
+
+  // ── Prompt row ──
+  const promptRow = document.createElement("div");
+  promptRow.className = "set-prompt-row" + (set.promptOpen ? " open" : "");
+  const promptLabel = document.createElement("div");
+  promptLabel.className = "set-prompt-label";
+  promptLabel.textContent = "AI context prompt for this set:";
+  const promptTa = document.createElement("textarea");
+  promptTa.className = "set-prompt-textarea";
+  promptTa.placeholder = "e.g. Mechanics questions for a 3-hour final exam\u2026";
+  promptTa.value = set.prompt || "";
+  promptTa.rows = 4;
+  promptRow.append(promptLabel, promptTa);
+
+  // ── Questions list ──
+  const qList = document.createElement("div");
+  qList.className = "set-questions" + (set.collapsed ? " collapsed" : "");
+
+  const questions = set.questionOrder || [];
+  if (questions.length === 0) {
+    const noQ = document.createElement("div");
+    noQ.className = "set-no-questions";
+    noQ.textContent = "No questions. Click + to add.";
+    qList.appendChild(noQ);
+  } else {
+    for (const qid of questions) {
+      const q = state.questions[qid];
+      if (!q) continue;
+      qList.appendChild(makeSidebarItem(q));
+    }
+  }
+
+  group.append(hdr, promptRow, qList);
+
+  // ── Event handlers ──
+  expandBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    set.collapsed = !set.collapsed;
+    qList.classList.toggle("collapsed", set.collapsed);
+    expandBtn.textContent = set.collapsed ? "\u25b6" : "\u25bc";
+    expandBtn.title = set.collapsed ? "Expand" : "Collapse";
+    expandBtn.setAttribute("aria-label", set.collapsed ? `Expand ${set.name}` : `Collapse ${set.name}`);
+    debounceSave();
+  });
+
+  enableCb.addEventListener("change", () => {
+    set.enabled = enableCb.checked;
+    debounceSave();
+  });
+
+  nameSpan.addEventListener("click", () => startRenameSet(set, nameSpan));
+  nameSpan.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRenameSet(set, nameSpan); }
+  });
+
+  promptBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    set.promptOpen = !set.promptOpen;
+    promptRow.classList.toggle("open", set.promptOpen);
+    if (set.promptOpen) promptTa.focus();
+    if (state.selectedSet === set.id) syncQsPromptPopover();
+    debounceSave();
+  });
+
+  promptTa.addEventListener("input", () => {
+    set.prompt = promptTa.value;
+    if (state.selectedSet === set.id) syncQsPromptPopover();
+    debounceSave();
+  });
+
+  addQBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    doNewQuestion(set.id);
+  });
+
+  deleteBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    doDeleteSet(set.id);
+  });
+
+  setupSetSortable(qList);
+  return group;
+}
+
+function startRenameSet(set, nameSpan) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "set-name-input";
+  input.value = set.name || "Question Set";
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = () => {
+    const newName = input.value.trim() || "Question Set";
+    set.name = newName;
+    const newSpan = document.createElement("span");
+    newSpan.className = "set-name";
+    newSpan.textContent = newName;
+    newSpan.title = "Click to rename";
+    newSpan.setAttribute("role", "button");
+    newSpan.setAttribute("tabindex", "0");
+    newSpan.setAttribute("aria-label", `Rename ${newName}`);
+    newSpan.addEventListener("click", () => startRenameSet(set, newSpan));
+    newSpan.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRenameSet(set, newSpan); }
+    });
+    input.replaceWith(newSpan);
+    debounceSave();
+  };
+  input.addEventListener("blur", finish);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    if (e.key === "Escape") { input.value = set.name || "Question Set"; input.blur(); }
+  });
+}
+
+function setupSetSortable(setQuestionsEl) {
+  if (!setQuestionsEl || typeof Sortable === "undefined") return;
+  Sortable.create(setQuestionsEl, {
+    group: "questions",
+    animation: 150,
+    ghostClass: "sortable-ghost",
+    filter: ".set-no-questions",
+    onEnd({ item, from, to }) {
+      const fromSetId = from.closest(".set-group")?.dataset.setId;
+      const toSetId   = to.closest(".set-group")?.dataset.setId;
+      const qid = item.dataset.id;
+      if (!qid) return;
+
+      // Rebuild question order from DOM for both sets
+      const fromSet = state.questionSets.find(s => s.id === fromSetId);
+      const toSet   = state.questionSets.find(s => s.id === toSetId);
+      if (fromSetId === toSetId) {
+        // Same set — just re-sync from DOM
+        if (fromSet) {
+          fromSet.questionOrder = [...from.querySelectorAll(".sidebar-item")]
+            .map(el => el.dataset.id).filter(Boolean);
+        }
+      } else {
+        // Cross-set move
+        if (fromSet) {
+          fromSet.questionOrder = [...from.querySelectorAll(".sidebar-item")]
+            .map(el => el.dataset.id).filter(Boolean);
+        }
+        if (toSet) {
+          toSet.questionOrder = [...to.querySelectorAll(".sidebar-item")]
+            .map(el => el.dataset.id).filter(Boolean);
+        }
+      }
+
+      // Update placeholder visibility
+      [from, to].forEach(el => {
+        el.querySelectorAll(".set-no-questions").forEach(n => n.remove());
+        if (el.querySelectorAll(".sidebar-item").length === 0) {
+          const noQ = document.createElement("div");
+          noQ.className = "set-no-questions";
+          noQ.textContent = "No questions. Click + to add.";
+          el.appendChild(noQ);
+        }
+      });
+
+      debounceSave();
+    },
+  });
 }
 
 function makeSidebarItem(q) {
@@ -1377,18 +1692,6 @@ function setupSidebar() {
   btnExpander?.addEventListener("click", toggleSidebar);
 }
 
-function setupSortable() {
-  Sortable.create(document.getElementById("question-list"), {
-    animation: 150, ghostClass: "sortable-ghost",
-    onEnd({ oldIndex, newIndex }) {
-      if (oldIndex === newIndex) return;
-      const [moved] = state.questionOrder.splice(oldIndex, 1);
-      state.questionOrder.splice(newIndex, 0, moved);
-      debounceSave();
-    },
-  });
-}
-
 // ── Question selection ─────────────────────────────────────────────────────
 function selectQuestion(qid) {
   state.selectedQuestion = qid;
@@ -1397,6 +1700,13 @@ function selectQuestion(qid) {
   });
   const q = state.questions[qid];
   if (!q) return;
+
+  // Track which set this question belongs to
+  const set = findSetForQuestion(qid);
+  if (set) {
+    state.selectedSet = set.id;
+    syncQsPromptPopover();
+  }
 
   document.getElementById("no-q-msg").style.display = "none";
   const panels = document.getElementById("editor-panels");
@@ -1430,10 +1740,21 @@ function showNoQuestion() {
 // ── Question CRUD ──────────────────────────────────────────────────────────
 function doDeleteQuestion(qid) {
   if (!confirm(`Delete "${qid}"?`)) return;
+  // Remove from its set's questionOrder
+  for (const set of state.questionSets) {
+    const idx = set.questionOrder.indexOf(qid);
+    if (idx >= 0) { set.questionOrder.splice(idx, 1); break; }
+  }
   delete state.questions[qid];
-  state.questionOrder = state.questionOrder.filter(id => id !== qid);
   if (state.selectedQuestion === qid) {
-    state.selectedQuestion = state.questionOrder[0] || null;
+    // Pick the first available question across sets
+    state.selectedQuestion = null;
+    for (const set of state.questionSets) {
+      if (set.questionOrder.length > 0) {
+        state.selectedQuestion = set.questionOrder[0];
+        break;
+      }
+    }
   }
   renderSidebar();
   if (state.selectedQuestion) selectQuestion(state.selectedQuestion);
@@ -1441,7 +1762,11 @@ function doDeleteQuestion(qid) {
   saveState();
 }
 
-function doNewQuestion() {
+function doNewQuestion(setId) {
+  const targetSet = state.questionSets.find(s => s.id === setId) ||
+                    state.questionSets.find(s => s.id === state.selectedSet) ||
+                    state.questionSets[0];
+  if (!targetSet) { toast("Create a question set first", "error"); return; }
   const num = String(Date.now()).slice(-6);
   const qid = `q_new_${num}`;
   state.questions[qid] = {
@@ -1463,11 +1788,59 @@ def generate(rng: np.random.Generator) -> dict:
     }
 `,
   };
-  state.questionOrder.push(qid);
+  targetSet.questionOrder.push(qid);
   renderSidebar();
   selectQuestion(qid);
   saveState();
-  document.getElementById("question-list").lastElementChild?.scrollIntoView({ behavior: "smooth" });
+  // Scroll to the new question within its set group
+  const groupEl = document.querySelector(`.set-group[data-set-id="${CSS.escape(targetSet.id)}"]`);
+  groupEl?.querySelector(".set-questions")?.lastElementChild?.scrollIntoView({ behavior: "smooth" });
+}
+
+function doNewSet() {
+  const name = prompt("Name for the new question set:") || "Question Set";
+  const id = "set_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+  const newSet = {
+    id, name: name.trim() || "Question Set",
+    prompt: "", enabled: true, questionOrder: [], collapsed: false,
+  };
+  state.questionSets.push(newSet);
+  state.selectedSet = id;
+  renderSidebar();
+  syncQsPromptPopover();
+  saveState();
+  document.querySelector(`.set-group[data-set-id="${CSS.escape(id)}"]`)
+    ?.scrollIntoView({ behavior: "smooth" });
+}
+
+function doDeleteSet(setId) {
+  const set = state.questionSets.find(s => s.id === setId);
+  if (!set) return;
+  const qCount = set.questionOrder.length;
+  const msg = qCount > 0
+    ? `Delete set "${set.name}" and its ${qCount} question${qCount !== 1 ? "s" : ""}?`
+    : `Delete set "${set.name}"?`;
+  if (!confirm(msg)) return;
+  // Remove all questions in this set
+  for (const qid of set.questionOrder) delete state.questions[qid];
+  state.questionSets = state.questionSets.filter(s => s.id !== setId);
+  if (state.selectedSet === setId) {
+    state.selectedSet = state.questionSets[0]?.id ?? null;
+    syncQsPromptPopover();
+  }
+  if (set.questionOrder.includes(state.selectedQuestion)) {
+    state.selectedQuestion = null;
+    for (const s of state.questionSets) {
+      if (s.questionOrder.length > 0) { state.selectedQuestion = s.questionOrder[0]; break; }
+    }
+  }
+  renderSidebar();
+  if (state.selectedQuestion && state.questions[state.selectedQuestion]) {
+    selectQuestion(state.selectedQuestion);
+  } else {
+    showNoQuestion();
+  }
+  saveState();
 }
 
 // ── Preview ────────────────────────────────────────────────────────────────
@@ -1589,7 +1962,14 @@ let _renderedActivePaper = null;
 
 async function doRenderAll() {
   if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
-  const enabledOrder = state.questionOrder.filter(id => state.questions[id]?.enabled !== false);
+  // Collect enabled questions from all enabled sets in order
+  const enabledOrder = [];
+  for (const set of state.questionSets) {
+    if (set.enabled === false) continue;
+    for (const qid of set.questionOrder) {
+      if (state.questions[qid]?.enabled !== false) enabledOrder.push(qid);
+    }
+  }
   if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
   if (enabledOrder.length % 5 !== 0) {
     if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
@@ -1741,10 +2121,16 @@ async function doExportZip() {
   zip.file("render.py", RENDER_PY_SOURCE);
   zip.folder("templates").file("exam_header.md.j2", EXAM_HEADER_J2);
   zip.file("requirements.txt", "numpy\njinja2\n");
-  for (const qid of state.questionOrder) {
-    const q = state.questions[qid]; if (!q) continue;
-    qDir.file(`${qid}.py`, q.python_code || "");
-    qDir.file(`${qid}.j2`, q.template || "");
+  // Export all questions from all sets (in set order, deduped)
+  const seen = new Set();
+  for (const set of state.questionSets) {
+    for (const qid of set.questionOrder) {
+      if (seen.has(qid)) continue;
+      seen.add(qid);
+      const q = state.questions[qid]; if (!q) continue;
+      qDir.file(`${qid}.py`, q.python_code || "");
+      qDir.file(`${qid}.j2`, q.template || "");
+    }
   }
   const blob = await zip.generateAsync({ type: "blob" });
   saveAs(blob, "question_forge_project.zip");
@@ -1768,11 +2154,20 @@ async function doImportZip() {
           j2Files[path.replace("questions/","").replace(".j2","")] = entry;
         }
       });
+      // Import into the active set (or create one)
+      let targetSet = state.questionSets.find(s => s.id === state.selectedSet) ||
+                      state.questionSets[0];
+      if (!targetSet) {
+        const id = "set_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+        targetSet = { id, name: "Imported Set", prompt: "", enabled: true, questionOrder: [], collapsed: false };
+        state.questionSets.push(targetSet);
+        state.selectedSet = id;
+      }
       let n = 0;
       for (const stem of Object.keys(pyFiles)) {
         const pyCode  = await pyFiles[stem].async("string");
         const template = j2Files[stem] ? await j2Files[stem].async("string") : "";
-        if (!state.questions[stem]) state.questionOrder.push(stem);
+        if (!state.questions[stem]) targetSet.questionOrder.push(stem);
         state.questions[stem] = {
           id: stem, title: stem, topic: "", difficulty: 2, enabled: true,
           ...(state.questions[stem] || {}),
@@ -1814,11 +2209,17 @@ function bindSettings() {
       debounceSave();
     });
   });
-  // Question set prompt (stored in state.settings, updated live)
+  // AI popover question-set prompt syncs with the selected set's prompt
   const qsPromptEl = document.getElementById("ai-qs-prompt");
   if (qsPromptEl) {
     qsPromptEl.addEventListener("input", () => {
-      state.settings.questionSetPrompt = qsPromptEl.value;
+      const set = state.questionSets.find(s => s.id === state.selectedSet);
+      if (!set) return;
+      set.prompt = qsPromptEl.value;
+      // Sync back to the sidebar textarea for this set
+      const groupEl = document.querySelector(`.set-group[data-set-id="${CSS.escape(state.selectedSet)}"]`);
+      const ta = groupEl?.querySelector(".set-prompt-textarea");
+      if (ta) ta.value = qsPromptEl.value;
       debounceSave();
     });
   }
@@ -1837,8 +2238,7 @@ function applySettingsToUI() {
     const cb = document.getElementById(`paper-check-${p}`);
     if (cb) cb.checked = s.papers.includes(p);
   });
-  const qsEl = document.getElementById("ai-qs-prompt");
-  if (qsEl) qsEl.value = s.questionSetPrompt || "";
+  syncQsPromptPopover();
 }
 
 // ── Resizer ────────────────────────────────────────────────────────────────
@@ -2005,7 +2405,7 @@ async function main() {
   on("btn-export-zip", doExportZip);
   on("btn-import",     doImportZip);
   on("btn-import-sb",  doImportZip);
-  on("btn-new-q",      doNewQuestion);
+  on("btn-new-set",    doNewSet);
   on("btn-new-param",  doNewParam);
 
   // Seed override input in preview header
@@ -2018,12 +2418,19 @@ async function main() {
     if (!confirm("Reset to default question bank? All local changes will be lost.")) return;
     try {
       const { DEFAULT_BANK } = await import("./src/default_bank.js");
-      state.questionOrder = DEFAULT_BANK.question_order.slice();
+      const defaultSetId = "set_default";
+      state.questionSets = [{
+        id: defaultSetId, name: "Question Set",
+        prompt: "", enabled: true,
+        questionOrder: DEFAULT_BANK.question_order.slice(),
+        collapsed: false,
+      }];
       state.questions = {};
       for (const [id, q] of Object.entries(DEFAULT_BANK.questions)) {
         state.questions[id] = { ...q, enabled: true };
       }
-      state.selectedQuestion = state.questionOrder[0] || null;
+      state.selectedSet = defaultSetId;
+      state.selectedQuestion = DEFAULT_BANK.question_order[0] || null;
       saveState(); renderSidebar(); applySettingsToUI();
       if (state.selectedQuestion) selectQuestion(state.selectedQuestion);
       else showNoQuestion();
@@ -2034,31 +2441,42 @@ async function main() {
   // Load state
   const hadState = loadState();
 
-  // Load DEFAULT_BANK if no questions saved
-  if (!hadState || state.questionOrder.length === 0) {
+  // Load DEFAULT_BANK if no question sets (or all sets empty)
+  const hasQuestions = state.questionSets?.some(s => s.questionOrder.length > 0);
+  if (!hadState || !hasQuestions) {
     try {
       const { DEFAULT_BANK } = await import("./src/default_bank.js");
-      state.questionOrder = DEFAULT_BANK.question_order.slice();
+      const defaultSetId = "set_default";
+      state.questionSets = [{
+        id: defaultSetId, name: "Question Set",
+        prompt: "", enabled: true,
+        questionOrder: DEFAULT_BANK.question_order.slice(),
+        collapsed: false,
+      }];
       state.questions = {};
       for (const [id, q] of Object.entries(DEFAULT_BANK.questions)) {
         state.questions[id] = { ...q, enabled: true };
       }
-      state.selectedQuestion = state.questionOrder[0] || null;
+      state.selectedSet = defaultSetId;
+      state.selectedQuestion = DEFAULT_BANK.question_order[0] || null;
       saveState();
     } catch (e) { console.warn("Could not load DEFAULT_BANK:", e); }
   }
 
   applySettingsToUI();
   renderSidebar();
-  setupSortable();
   setupSidebar();
 
   if (state.selectedQuestion && state.questions[state.selectedQuestion]) {
     selectQuestion(state.selectedQuestion);
-  } else if (state.questionOrder.length > 0) {
-    selectQuestion(state.questionOrder[0]);
   } else {
-    showNoQuestion();
+    // Pick the first question across all sets
+    let firstQ = null;
+    for (const set of state.questionSets) {
+      if (set.questionOrder.length > 0) { firstQ = set.questionOrder[0]; break; }
+    }
+    if (firstQ) selectQuestion(firstQ);
+    else showNoQuestion();
   }
 
   // Start Pyodide (background)
@@ -2395,16 +2813,21 @@ async function doTestStream() {
 
 
 function _buildBankSummary() {
-  if (!state || !state.questionOrder || !state.questions) return "";
+  if (!state || !state.questionSets || !state.questions) return "";
   const lines = [];
-  state.questionOrder.forEach((qid, idx) => {
-    const q = state.questions[qid];
-    if (!q) return;
-    lines.push(`[${idx + 1}] ${qid}${q.topic ? " — " + q.topic : ""}`);
-    if (q.template && q.template.trim()) {
-      lines.push("  Template: " + q.template.trim().replace(/\n/g, " "));
+  let idx = 0;
+  for (const set of state.questionSets) {
+    lines.push(`## ${set.name}${set.enabled === false ? " (disabled)" : ""}`);
+    for (const qid of set.questionOrder) {
+      const q = state.questions[qid];
+      if (!q) continue;
+      idx++;
+      lines.push(`[${idx}] ${qid}${q.topic ? " — " + q.topic : ""}`);
+      if (q.template && q.template.trim()) {
+        lines.push("  Template: " + q.template.trim().replace(/\n/g, " "));
+      }
     }
-  });
+  }
   return lines.join("\n");
 }
 
@@ -2421,12 +2844,13 @@ async function doSendChat() {
 
   // Build a concise summary of questions already in the bank (capped to avoid oversized prompts)
   const BANK_SUMMARY_LIMIT = 80;
-  const questionBankSummary = state.questionOrder.slice(0, BANK_SUMMARY_LIMIT).map(id => {
+  const allQids = state.questionSets.flatMap(s => s.questionOrder);
+  const questionBankSummary = allQids.slice(0, BANK_SUMMARY_LIMIT).map(id => {
     const q = state.questions[id]; if (!q) return null;
     return `- ${id}: ${q.title || id}${q.topic ? ` (topic: ${q.topic})` : ""}`;
   }).filter(Boolean).join("\n") +
-    (state.questionOrder.length > BANK_SUMMARY_LIMIT
-      ? `\n… (${state.questionOrder.length - BANK_SUMMARY_LIMIT} more questions not shown)`
+    (allQids.length > BANK_SUMMARY_LIMIT
+      ? `\n… (${allQids.length - BANK_SUMMARY_LIMIT} more questions not shown)`
       : "");
 
   // Add user message to history and UI
@@ -2462,7 +2886,10 @@ async function doSendChat() {
           messages: aiState.messages,
           template, python_code: pythonCode, question_id: qid,
           system_prompt: aiState.systemPrompt.trim() === DEFAULT_SYSTEM_PROMPT.trim() ? "" : aiState.systemPrompt,
-          question_set_prompt: state?.settings?.questionSetPrompt || "",
+          question_set_prompt: (() => {
+            const activeSet = state.questionSets.find(s => s.id === state.selectedSet);
+            return activeSet?.prompt || "";
+          })(),
           bank_summary: bankSummary,
           preview_error: lastPreviewError || "",
           question_bank_summary: questionBankSummary,
@@ -2809,11 +3236,17 @@ function showCreateCard(q) {
         id: qid, title: q.title, topic: q.topic, difficulty: 2, enabled: true,
         template: q.template, python_code: q.python_code,
       };
-      state.questionOrder.push(qid);
+      // Add to active set (or first set)
+      const targetSet = state.questionSets.find(s => s.id === state.selectedSet) ||
+                        state.questionSets[0];
+      if (targetSet) targetSet.questionOrder.push(qid);
       renderSidebar();
       selectQuestion(qid);
       saveState();
-      document.getElementById("question-list").lastElementChild?.scrollIntoView({behavior: "smooth"});
+      const groupEl = targetSet
+        ? document.querySelector(`.set-group[data-set-id="${CSS.escape(targetSet.id)}"]`)
+        : null;
+      groupEl?.querySelector(".set-questions")?.lastElementChild?.scrollIntoView({behavior: "smooth"});
     }
     const status = accepted ? "accepted" : "rejected";
     const icon   = accepted ? "✓" : "✗";
