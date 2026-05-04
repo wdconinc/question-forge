@@ -2024,19 +2024,10 @@ function setAIDot(state) {
   dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
 }
 
-function _escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
-  el.innerHTML = _escapeHtml(html);
+  el.innerHTML = html;
   if (toolBadges && toolBadges.length) {
     for (const b of toolBadges) {
       const span = document.createElement("span");
@@ -2109,7 +2100,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     if (!res.ok) {
@@ -2119,7 +2110,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     const data = await res.json();
@@ -2132,13 +2123,13 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-chat-send").disabled = false;
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
-    if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(data.model || "?")}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
     statusEl.textContent = "✗ " + msg;
     statusEl.style.color = "#c62828";
     setAIDot("error");
-    if (!silent) appendChatMsg("system-note", `⚠ ${msg}`);
+    if (!silent) appendChatMsg("system-note", `⚠ ${escHtml(msg)}`);
   }
 }
 
@@ -2177,7 +2168,7 @@ function startHealthCheck() {
         const msg = _classifyConnError(e instanceof TypeError ? e : null,
                                        e.message?.match(/HTTP (\d+)/)?.[1]);
         markAIDisconnected("Server unreachable.");
-        appendChatMsg("system-note", `⚠ Lost connection: ${msg}`);
+        appendChatMsg("system-note", `⚠ Lost connection: ${escHtml(msg)}`);
       }
     }
   }, 15000);
