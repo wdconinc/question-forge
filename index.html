@@ -318,6 +318,14 @@
       font-family: "SF Mono", Consolas, monospace; font-size: 12px;
       white-space: pre-wrap; color: #b71c1c;
     }
+    .error-box-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .btn-fix-ai {
+      align-self: flex-start; padding: 3px 10px; background: #1e3a5f; color: white;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 11.5px;
+      font-weight: 600; transition: background 0.15s;
+    }
+    .btn-fix-ai:hover:not(:disabled) { background: #2a5298; }
+    .btn-fix-ai:disabled { opacity: 0.45; cursor: not-allowed; }
 
     /* No question placeholder */
     #no-q-msg {
@@ -1217,6 +1225,7 @@ let pyodideReady = false;
 let templateEditor = null;
 let pythonEditor = null;
 let saveTimer = null;
+let lastPreviewError = null;   // tracks the most recent preview error (null = no error / success)
 
 // ── State persistence ──────────────────────────────────────────────────────
 function loadState() {
@@ -1394,6 +1403,7 @@ function selectQuestion(qid) {
 
   document.getElementById("preview-content").innerHTML =
     '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
+  lastPreviewError = null;   // clear stale error from previous question
   updatePreviewSeedLabel();
   renderParamsPanel(qid);
   debounceSave();
@@ -1499,12 +1509,20 @@ json.dumps({
 `);
     renderPreview(JSON.parse(resultJson));
   } catch (e) {
+    const errorMsg = e.message || String(e);
+    lastPreviewError = errorMsg;
     document.getElementById("preview-content").innerHTML =
-      `<div class="error-box">${escHtml(e.message || String(e))}</div>`;
+      `<div class="error-box-wrap">` +
+      `<div class="error-box">${escHtml(errorMsg)}</div>` +
+      `<button class="btn-fix-ai" id="btn-fix-error-ai" aria-label="Fix preview error with AI">🤖 Fix with AI</button>` +
+      `</div>`;
+    updateFixAIButton();
+    document.getElementById("btn-fix-error-ai")?.addEventListener("click", doFixWithAI);
   }
 }
 
 function renderPreview(data) {
+  lastPreviewError = null;   // successful render — no error to report
   let md = data.question + "\n\n";
   for (let i = 0; i < 5; i++) {
     md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
@@ -1525,6 +1543,36 @@ function escHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ── Fix-with-AI shortcut ───────────────────────────────────────────────────
+function updateFixAIButton() {
+  const btn = document.getElementById("btn-fix-error-ai");
+  if (!btn) return;
+  const connected = aiState.connected;
+  btn.disabled = !connected;
+  btn.title = connected ? "" : "Connect AI first";
+}
+
+function doFixWithAI() {
+  if (!lastPreviewError) return;
+  if (!aiState.connected) { toast("Connect AI first", "error"); return; }
+
+  // Open chat panel if not already open
+  const panel  = document.getElementById("chat-panel");
+  const rzChat = document.getElementById("rsz-chat");
+  if (!panel.classList.contains("open")) {
+    panel.classList.add("open");
+    rzChat.style.display = "";
+    aiState.panelOpen = true;
+    saveAIState();
+  }
+
+  // Pre-fill the input and auto-send a focused fix request.
+  // The full error is already included in the request as preview_error.
+  const input = document.getElementById("chat-input");
+  input.value = "Fix the preview error shown in the preview panel.";
+  doSendChat();
 }
 
 // ── Render All ─────────────────────────────────────────────────────────────
@@ -2024,6 +2072,18 @@ function setAIDot(state) {
   dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
 }
 
+function typesetMath(el) {
+  if (!window.MathJax) return;
+  const run = () => MathJax.typesetPromise([el]).catch(console.error);
+  if (MathJax.startup?.promise) {
+    MathJax.startup.promise.then(run).catch(console.error);
+  } else if (MathJax.typesetPromise) {
+    run();
+  }
+}
+
+// Caller is responsible for HTML-escaping any untrusted content in `html`
+// (e.g. use escHtml()) before passing it in, as it is assigned directly to innerHTML.
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
@@ -2039,6 +2099,7 @@ function appendChatMsg(role, html, toolBadges, skipLog) {
   }
   document.getElementById("chat-messages").appendChild(el);
   el.scrollIntoView({ behavior: "smooth" });
+  typesetMath(el);
   if (!skipLog) {
     aiState.chatLog.push({ role, html, toolBadges: toolBadges || [] });
     saveAIState();
@@ -2100,7 +2161,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     if (!res.ok) {
@@ -2110,7 +2171,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     const data = await res.json();
@@ -2123,13 +2184,14 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-chat-send").disabled = false;
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
-    if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
+    updateFixAIButton();
+    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(data.model || "?")}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
     statusEl.textContent = "✗ " + msg;
     statusEl.style.color = "#c62828";
     setAIDot("error");
-    if (!silent) appendChatMsg("system-note", `⚠ ${msg}`);
+    if (!silent) appendChatMsg("system-note", `⚠ ${escHtml(msg)}`);
   }
 }
 
@@ -2144,6 +2206,7 @@ function markAIDisconnected(statusMsg = "Disconnected.", keepCredentials = true)
   document.getElementById("btn-ai-connect").style.display    = "";
   document.getElementById("btn-ai-disconnect").style.display = "none";
   document.getElementById("ai-conn-status").textContent = statusMsg;
+  updateFixAIButton();
 }
 
 function doAIDisconnect() {
@@ -2168,7 +2231,7 @@ function startHealthCheck() {
         const msg = _classifyConnError(e instanceof TypeError ? e : null,
                                        e.message?.match(/HTTP (\d+)/)?.[1]);
         markAIDisconnected("Server unreachable.");
-        appendChatMsg("system-note", `⚠ Lost connection: ${msg}`);
+        appendChatMsg("system-note", `⚠ Lost connection: ${escHtml(msg)}`);
       }
     }
   }, 15000);
@@ -2273,6 +2336,7 @@ async function doSendChat() {
           system_prompt: aiState.systemPrompt || "",
           question_set_prompt: state?.settings?.questionSetPrompt || "",
           bank_summary: bankSummary,
+          preview_error: lastPreviewError || "",
         }),
       });
     } finally {
@@ -2406,6 +2470,7 @@ async function doSendChat() {
     aiState.messages.push({ role: "assistant", content: assistantText || "[tool call]" });
     aiState.chatLog.push({ role: "assistant", html: aEl.innerHTML, toolBadges: [] });
     saveAIState();
+    typesetMath(aEl);
 
   } catch (e) {
     const isAbort = e.name === "AbortError";
