@@ -1218,7 +1218,7 @@ const DEFAULT_SETTINGS = {
   duration: "3 hours", examiners: "W. Deconinck",
   seedA: 42, seedB: 137, seedC: 271,
   papers: ["A", "B"], numQuestions: 30,
-  questionSetPrompt: "",
+  questionSetPrompt: "This exam is for an algebra-based introductory physics course (OpenStax College Physics 2e).",
 };
 
 let state = null;
@@ -1241,6 +1241,10 @@ function loadState() {
         questions: p.questions || {},
         selectedQuestion: p.selectedQuestion || null,
       };
+      // Migration: if questionSetPrompt was the old default (empty string), apply the new default.
+      if (state.settings.questionSetPrompt === "") {
+        state.settings.questionSetPrompt = DEFAULT_SETTINGS.questionSetPrompt;
+      }
       return true;
     }
   } catch (e) { console.warn("loadState:", e); }
@@ -2060,12 +2064,21 @@ async function main() {
 
 // ── AI Chat ────────────────────────────────────────────────────────────────
 
+// Opening line of the OLD default system prompt (contained OpenStax course description).
+// Used to migrate persisted AI state from sessions that saved the prompt verbatim.
+const OLD_SYSTEM_PROMPT_OPENING =
+  "You are an expert physics exam question author helping edit a parametrized " +
+  "multiple-choice question for an algebra-based introductory physics course " +
+  "(OpenStax College Physics 2e).";
+const NEW_SYSTEM_PROMPT_OPENING =
+  "You are an expert physics exam question author helping edit a parametrized " +
+  "multiple-choice question.";
+
 // Default system prompt shown in the UI as a starting point.
 // Follows the recommended markdown-header format for Gemini system prompts.
 const DEFAULT_SYSTEM_PROMPT = `\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question for an algebra-based introductory physics course \
-(OpenStax College Physics 2e).
+multiple-choice question.
 
 ## Python generator function
 
@@ -2136,7 +2149,16 @@ function loadAIState() {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
     if (s.url)     aiState.url     = s.url;
     if (s.token)   aiState.token   = s.token;
-    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") aiState.systemPrompt = s.systemPrompt.trim();
+    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") {
+      let sp = s.systemPrompt.trim();
+      // Migration: if the saved prompt still contains the old OpenStax opening line,
+      // replace it with the new generic opening so the course context comes from
+      // the question-set prompt instead.
+      if (sp.startsWith(OLD_SYSTEM_PROMPT_OPENING)) {
+        sp = NEW_SYSTEM_PROMPT_OPENING + sp.slice(OLD_SYSTEM_PROMPT_OPENING.length);
+      }
+      aiState.systemPrompt = sp;
+    }
     if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
     if (typeof s.panelOpen === "boolean") aiState.panelOpen = s.panelOpen;
     if (typeof s.panelWidth === "number") aiState.panelWidth = s.panelWidth;

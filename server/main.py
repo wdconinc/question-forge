@@ -249,8 +249,7 @@ TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question for an algebra-based introductory physics course \
-(OpenStax College Physics 2e).
+multiple-choice question.
 
 ## Python generator function
 
