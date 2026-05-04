@@ -130,6 +130,7 @@ class ChatRequest(BaseModel):
     question_id: str = ""
     system_prompt: str = ""       # optional override for the base system prompt
     question_set_prompt: str = "" # optional per-exam context appended to system prompt
+    bank_summary: str = ""        # optional summary of all questions in the bank
     preview_error: str = ""       # current error shown in the preview panel (if any)
 
 # ---------------------------------------------------------------------------
@@ -159,6 +160,22 @@ TOOLS = [
                         "description": "The complete new Python generator code. Omit if not changing the Python code.",
                     },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_question_bank",
+            "description": (
+                "Retrieve the full list of all questions in the exam bank, including their "
+                "exam-order position, IDs, topics, and question text. Call this when you need "
+                "to check topic coverage, identify missing or overrepresented topics, or ensure "
+                "consistency in notation across all questions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
             },
         },
     },
@@ -281,6 +298,11 @@ Current question ID: {qid}
         prompt += f"""
 === QUESTION SET CONTEXT ===
 {req.question_set_prompt.strip()}
+"""
+    if req.bank_summary.strip():
+        prompt += f"""
+=== ALL QUESTIONS IN BANK ===
+{req.bank_summary.strip()}
 """
     if req.preview_error.strip():
         prompt += f"""
@@ -453,10 +475,21 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 
     system_text, contents = _to_gemini_contents(_system_prompt(req), req.messages)
 
+    # Build the tools list; exclude get_question_bank when bank data is already
+    # in the system prompt (prevents the AI from calling it in a loop).
+    gemini_tools = _to_gemini_tools()
+    if req.bank_summary.strip():
+        gemini_tools = [{
+            "functionDeclarations": [
+                fd for fd in tool_group["functionDeclarations"]
+                if fd["name"] != "get_question_bank"
+            ]
+        } for tool_group in gemini_tools]
+
     body = {
         "systemInstruction": {"parts": [{"text": system_text}]},
         "contents": contents,
-        "tools": _to_gemini_tools(),
+        "tools": gemini_tools,
         "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
         "generationConfig": {"temperature": 0.7},
     }
@@ -557,6 +590,15 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
             for fc in function_calls:
                 name = fc.get("name", "")
                 args = fc.get("args", {})
+                if name == "get_question_bank":
+                    if req.bank_summary.strip():
+                        # Bank is already in the system prompt; suppress to avoid loops
+                        print("[chat] suppressing get_question_bank — bank_summary already provided", flush=True)
+                        continue
+                    # Signal the browser to provide the bank summary and retry
+                    print("[chat] AI requested get_question_bank", flush=True)
+                    yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
+                    continue
                 payload: dict = {"type": "tool_call", "tool": name}
                 if "template" in args:
                     payload["template"] = args["template"]
