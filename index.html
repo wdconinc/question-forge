@@ -2082,6 +2082,8 @@ function typesetMath(el) {
   }
 }
 
+// Caller is responsible for HTML-escaping any untrusted content in `html`
+// (e.g. use escHtml()) before passing it in, as it is assigned directly to innerHTML.
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
@@ -2159,7 +2161,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     if (!res.ok) {
@@ -2169,7 +2171,7 @@ async function doAIConnect(silent = false) {
       statusEl.textContent = "✗ " + msg;
       statusEl.style.color = "#c62828";
       setAIDot("error");
-      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${msg}`);
+      if (!silent) appendChatMsg("system-note", `⚠ Connection failed: ${escHtml(msg)}`);
       return;
     }
     const data = await res.json();
@@ -2183,13 +2185,13 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
     updateFixAIButton();
-    if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(data.model || "?")}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
     statusEl.textContent = "✗ " + msg;
     statusEl.style.color = "#c62828";
     setAIDot("error");
-    if (!silent) appendChatMsg("system-note", `⚠ ${msg}`);
+    if (!silent) appendChatMsg("system-note", `⚠ ${escHtml(msg)}`);
   }
 }
 
@@ -2229,7 +2231,7 @@ function startHealthCheck() {
         const msg = _classifyConnError(e instanceof TypeError ? e : null,
                                        e.message?.match(/HTTP (\d+)/)?.[1]);
         markAIDisconnected("Server unreachable.");
-        appendChatMsg("system-note", `⚠ Lost connection: ${msg}`);
+        appendChatMsg("system-note", `⚠ Lost connection: ${escHtml(msg)}`);
       }
     }
   }, 15000);
