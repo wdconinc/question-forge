@@ -2082,6 +2082,8 @@ function typesetMath(el) {
   }
 }
 
+// Caller is responsible for HTML-escaping any untrusted content in `html`
+// (e.g. use escHtml()) before passing it in, as it is assigned directly to innerHTML.
 function appendChatMsg(role, html, toolBadges, skipLog) {
   const el = document.createElement("div");
   el.className = "chat-msg " + role;
