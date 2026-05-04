@@ -2416,10 +2416,10 @@ async function doSendChat() {
 
   let createCount = 0;
 
-  // Inner function: performs one fetch+stream attempt with the given bankSummary.
-  // Returns true if the AI requested the question bank (caller should retry with
-  // the bank summary), false when the turn is complete.
-  const _doRequest = async (bankSummary) => {
+  // Inner function: performs one fetch+stream attempt with the given bankSummary
+  // and optional requestedQuestion data.
+  // Returns an object: { needsBank: bool, neededQuestionId: string|null }
+  const _doRequest = async (bankSummary, requestedQuestion = null) => {
     const _chatAbort = new AbortController();
     const _chatTimeout = setTimeout(() => _chatAbort.abort(new Error("Request timed out after 90s")), 90000);
     let res;
@@ -2439,6 +2439,9 @@ async function doSendChat() {
           bank_summary: bankSummary,
           preview_error: lastPreviewError || "",
           question_bank_summary: questionBankSummary,
+          requested_question_id: requestedQuestion?.question_id || "",
+          requested_question_template: requestedQuestion?.template || "",
+          requested_question_python_code: requestedQuestion?.python_code || "",
         }),
       });
     } finally {
@@ -2457,6 +2460,7 @@ async function doSendChat() {
     let buf = "";
     let streamDone = false;
     let needsBankSummary = false;
+    let neededQuestionId = null;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -2490,6 +2494,12 @@ async function doSendChat() {
               // Cancel the reader immediately so no further events from this
               // response are processed (prevents side-effects from any tool
               // calls or text the model may have also emitted).
+              reader.cancel();
+              streamDone = true;
+              break;
+            } else if (evt.tool === "get_question") {
+              console.log("[AI] AI requested question:", evt.question_id, "— aborting stream and retrying with question data");
+              neededQuestionId = evt.question_id || null;
               reader.cancel();
               streamDone = true;
               break;
@@ -2548,22 +2558,43 @@ async function doSendChat() {
       }
     }
 
-    return needsBankSummary;
+    return { needsBank: needsBankSummary, neededQuestionId };
   };
 
   let assistantText = "";
 
   try {
-    // First attempt — no bank summary
-    const needsBank = await _doRequest("");
+    // First attempt — no bank summary, no requested question
+    let { needsBank, neededQuestionId } = await _doRequest("", null);
 
     if (needsBank) {
       // AI requested the question bank: build it and retry transparently
       aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
       assistantText = "";
-      const stillNeedsBank = await _doRequest(_buildBankSummary());
-      if (stillNeedsBank) {
+      ({ needsBank, neededQuestionId } = await _doRequest(_buildBankSummary(), null));
+      if (needsBank) {
         console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
+      }
+    }
+
+    if (neededQuestionId) {
+      // AI requested a specific non-active question: look it up and retry
+      const neededQ = state?.questions?.[neededQuestionId];
+      if (neededQ) {
+        aEl.innerHTML = `<span style="color:#aaa">Fetching question <b>${escHtml(neededQuestionId)}</b>…</span>`;
+        assistantText = "";
+        const requestedQuestion = {
+          question_id: neededQuestionId,
+          template: neededQ.template || "",
+          python_code: neededQ.python_code || "",
+        };
+        const result = await _doRequest("", requestedQuestion);
+        if (result.neededQuestionId) {
+          console.warn("[AI] AI requested another question after one was already provided — ignoring.");
+        }
+      } else {
+        console.warn("[AI] AI requested unknown question:", neededQuestionId);
+        aEl.innerHTML = `<span style="color:#e65100">⚠ AI requested question <b>${escHtml(neededQuestionId)}</b> which does not exist in the bank.</span>`;
       }
     }
 
