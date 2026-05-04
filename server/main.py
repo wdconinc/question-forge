@@ -130,6 +130,7 @@ class ChatRequest(BaseModel):
     question_id: str = ""
     system_prompt: str = ""       # optional override for the base system prompt
     question_set_prompt: str = "" # optional per-exam context appended to system prompt
+    bank_summary: str = ""        # optional summary of all questions in the bank
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -239,6 +240,11 @@ Current question ID: {qid}
         prompt += f"""
 === QUESTION SET CONTEXT ===
 {req.question_set_prompt.strip()}
+"""
+    if req.bank_summary.strip():
+        prompt += f"""
+=== ALL QUESTIONS IN BANK ===
+{req.bank_summary.strip()}
 """
     return prompt
 

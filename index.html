@@ -2215,6 +2215,21 @@ async function doTestStream() {
 }
 
 
+function _buildBankSummary() {
+  if (!state || !state.questionOrder || !state.questions) return "";
+  const lines = [];
+  state.questionOrder.forEach((qid, idx) => {
+    const q = state.questions[qid];
+    if (!q) return;
+    lines.push(`[${idx + 1}] ${qid}${q.topic ? " — " + q.topic : ""}`);
+    if (q.template && q.template.trim()) {
+      lines.push("  Template: " + q.template.trim().replace(/\n/g, " "));
+    }
+  });
+  return lines.join("\n");
+}
+
+
 async function doSendChat() {
   const input = document.getElementById("chat-input");
   const text = input.value.trim();
@@ -2224,6 +2239,9 @@ async function doSendChat() {
   const qid = state.selectedQuestion || "";
   const template   = templateEditor ? templateEditor.getValue() : "";
   const pythonCode = pythonEditor   ? pythonEditor.getValue()   : "";
+
+  // Build a summary of all questions for topic/notation context
+  const bankSummary = _buildBankSummary();
 
   // Add user message to history and UI
   aiState.messages.push({ role: "user", content: text });
@@ -2256,6 +2274,7 @@ async function doSendChat() {
           template, python_code: pythonCode, question_id: qid,
           system_prompt: aiState.systemPrompt || "",
           question_set_prompt: state?.settings?.questionSetPrompt || "",
+          bank_summary: bankSummary,
         }),
       });
     } finally {
