@@ -1421,9 +1421,11 @@ function makeSetGroup(set) {
   hdr.className = "set-hdr";
 
   const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
   expandBtn.className = "set-expand-btn";
   expandBtn.textContent = set.collapsed ? "\u25b6" : "\u25bc";
   expandBtn.title = set.collapsed ? "Expand" : "Collapse";
+  expandBtn.setAttribute("aria-label", set.collapsed ? `Expand ${set.name}` : `Collapse ${set.name}`);
 
   const enableCb = document.createElement("input");
   enableCb.type = "checkbox";
@@ -1435,23 +1437,32 @@ function makeSetGroup(set) {
   nameSpan.className = "set-name";
   nameSpan.textContent = set.name || "Question Set";
   nameSpan.title = "Click to rename";
+  nameSpan.setAttribute("role", "button");
+  nameSpan.setAttribute("tabindex", "0");
+  nameSpan.setAttribute("aria-label", `Rename ${set.name || "Question Set"}`);
 
   const actions = document.createElement("div");
   actions.className = "set-actions";
 
   const promptBtn = document.createElement("button");
+  promptBtn.type = "button";
   promptBtn.className = "set-btn";
   promptBtn.title = "Edit AI context prompt for this set";
+  promptBtn.setAttribute("aria-label", "Edit AI context prompt for this set");
   promptBtn.textContent = "\ud83d\udcdd";
 
   const addQBtn = document.createElement("button");
+  addQBtn.type = "button";
   addQBtn.className = "set-btn";
   addQBtn.title = "Add question to this set";
+  addQBtn.setAttribute("aria-label", "Add question to this set");
   addQBtn.textContent = "+";
 
   const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
   deleteBtn.className = "set-btn";
   deleteBtn.title = "Delete this set";
+  deleteBtn.setAttribute("aria-label", `Delete set ${set.name || "Question Set"}`);
   deleteBtn.textContent = "\ud83d\uddd1";
 
   actions.append(promptBtn, addQBtn, deleteBtn);
@@ -1497,6 +1508,7 @@ function makeSetGroup(set) {
     qList.classList.toggle("collapsed", set.collapsed);
     expandBtn.textContent = set.collapsed ? "\u25b6" : "\u25bc";
     expandBtn.title = set.collapsed ? "Expand" : "Collapse";
+    expandBtn.setAttribute("aria-label", set.collapsed ? `Expand ${set.name}` : `Collapse ${set.name}`);
     debounceSave();
   });
 
@@ -1506,6 +1518,9 @@ function makeSetGroup(set) {
   });
 
   nameSpan.addEventListener("click", () => startRenameSet(set, nameSpan));
+  nameSpan.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRenameSet(set, nameSpan); }
+  });
 
   promptBtn.addEventListener("click", e => {
     e.stopPropagation();
@@ -1532,7 +1547,7 @@ function makeSetGroup(set) {
     doDeleteSet(set.id);
   });
 
-  setupSetSortable(qList, set.id);
+  setupSetSortable(qList);
   return group;
 }
 
@@ -1552,7 +1567,13 @@ function startRenameSet(set, nameSpan) {
     newSpan.className = "set-name";
     newSpan.textContent = newName;
     newSpan.title = "Click to rename";
+    newSpan.setAttribute("role", "button");
+    newSpan.setAttribute("tabindex", "0");
+    newSpan.setAttribute("aria-label", `Rename ${newName}`);
     newSpan.addEventListener("click", () => startRenameSet(set, newSpan));
+    newSpan.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRenameSet(set, newSpan); }
+    });
     input.replaceWith(newSpan);
     debounceSave();
   };
@@ -1563,7 +1584,7 @@ function startRenameSet(set, nameSpan) {
   });
 }
 
-function setupSetSortable(setQuestionsEl, setId) {
+function setupSetSortable(setQuestionsEl) {
   if (!setQuestionsEl || typeof Sortable === "undefined") return;
   Sortable.create(setQuestionsEl, {
     group: "questions",
@@ -1781,6 +1802,7 @@ function doNewSet() {
   state.questionSets.push(newSet);
   state.selectedSet = id;
   renderSidebar();
+  syncQsPromptPopover();
   saveState();
   document.querySelector(`.set-group[data-set-id="${CSS.escape(id)}"]`)
     ?.scrollIntoView({ behavior: "smooth" });
@@ -1799,6 +1821,7 @@ function doDeleteSet(setId) {
   state.questionSets = state.questionSets.filter(s => s.id !== setId);
   if (state.selectedSet === setId) {
     state.selectedSet = state.questionSets[0]?.id ?? null;
+    syncQsPromptPopover();
   }
   if (set.questionOrder.includes(state.selectedQuestion)) {
     state.selectedQuestion = null;
