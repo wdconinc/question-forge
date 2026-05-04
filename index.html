@@ -1403,6 +1403,7 @@ function selectQuestion(qid) {
 
   document.getElementById("preview-content").innerHTML =
     '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
+  lastPreviewError = null;   // clear stale error from previous question
   updatePreviewSeedLabel();
   renderParamsPanel(qid);
   debounceSave();
@@ -1510,12 +1511,12 @@ json.dumps({
   } catch (e) {
     const errorMsg = e.message || String(e);
     lastPreviewError = errorMsg;
-    const connected = aiState.connected;
     document.getElementById("preview-content").innerHTML =
       `<div class="error-box-wrap">` +
       `<div class="error-box">${escHtml(errorMsg)}</div>` +
-      `<button class="btn-fix-ai" id="btn-fix-error-ai" aria-label="Fix preview error with AI"${connected ? "" : ' disabled title="Connect AI first"'}>🤖 Fix with AI</button>` +
+      `<button class="btn-fix-ai" id="btn-fix-error-ai" aria-label="Fix preview error with AI">🤖 Fix with AI</button>` +
       `</div>`;
+    updateFixAIButton();
     document.getElementById("btn-fix-error-ai")?.addEventListener("click", doFixWithAI);
   }
 }
@@ -1545,6 +1546,14 @@ function escHtml(s) {
 }
 
 // ── Fix-with-AI shortcut ───────────────────────────────────────────────────
+function updateFixAIButton() {
+  const btn = document.getElementById("btn-fix-error-ai");
+  if (!btn) return;
+  const connected = aiState.connected;
+  btn.disabled = !connected;
+  btn.title = connected ? "" : "Connect AI first";
+}
+
 function doFixWithAI() {
   if (!lastPreviewError) return;
   if (!aiState.connected) { toast("Connect AI first", "error"); return; }
@@ -2162,6 +2171,7 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-chat-send").disabled = false;
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
+    updateFixAIButton();
     if (!silent) appendChatMsg("system-note", `Connected to ${url} · model: ${data.model || "?"}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
@@ -2183,6 +2193,7 @@ function markAIDisconnected(statusMsg = "Disconnected.", keepCredentials = true)
   document.getElementById("btn-ai-connect").style.display    = "";
   document.getElementById("btn-ai-disconnect").style.display = "none";
   document.getElementById("ai-conn-status").textContent = statusMsg;
+  updateFixAIButton();
 }
 
 function doAIDisconnect() {
