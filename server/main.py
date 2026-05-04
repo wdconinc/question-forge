@@ -133,6 +133,9 @@ class ChatRequest(BaseModel):
     bank_summary: str = ""        # optional summary of all questions in the bank
     preview_error: str = ""       # current error shown in the preview panel (if any)
     question_bank_summary: str = "" # brief listing of existing question IDs, titles, and topics
+    requested_question_id: str = ""       # ID of a non-active question the AI requested
+    requested_question_template: str = "" # Jinja2 template of the requested question
+    requested_question_python_code: str = "" # Python code of the requested question
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -183,6 +186,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_question",
+            "description": (
+                "Retrieve the full Jinja2 template and Python generator code for a specific "
+                "question that is not currently active in the editor. Use this when you need "
+                "to read, compare, or reference another question's implementation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question_id": {
+                        "type": "string",
+                        "description": "The ID of the question to retrieve.",
+                    },
+                },
+                "required": ["question_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_question",
             "description": (
                 "Create a brand-new parametrized multiple-choice question and add it to the exam. "
@@ -225,8 +249,7 @@ TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question for an algebra-based introductory physics course \
-(OpenStax College Physics 2e).
+multiple-choice question.
 
 ## Python generator function
 
@@ -337,6 +360,16 @@ The question currently fails to preview with this error:
 {req.preview_error.strip()}
 
 Please fix the template and/or python_code so the preview runs without errors.
+"""
+    if req.requested_question_id.strip():
+        prompt += f"""
+=== REQUESTED QUESTION: {req.requested_question_id.strip()} ===
+
+--- JINJA2 TEMPLATE ---
+{req.requested_question_template or "(empty)"}
+
+--- PYTHON GENERATOR ---
+{req.requested_question_python_code or "(empty)"}
 """
     return prompt
 
@@ -503,12 +536,18 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 
     # Build the tools list; exclude get_question_bank when bank data is already
     # in the system prompt (prevents the AI from calling it in a loop).
+    # Similarly, exclude get_question when that question's data is already provided.
     gemini_tools = _to_gemini_tools()
+    excluded: set[str] = set()
     if req.bank_summary.strip():
+        excluded.add("get_question_bank")
+    if req.requested_question_id.strip():
+        excluded.add("get_question")
+    if excluded:
         gemini_tools = [{
             "functionDeclarations": [
                 fd for fd in tool_group["functionDeclarations"]
-                if fd["name"] != "get_question_bank"
+                if fd["name"] not in excluded
             ]
         } for tool_group in gemini_tools]
 
@@ -624,6 +663,16 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     # Signal the browser to provide the bank summary and retry
                     print("[chat] AI requested get_question_bank", flush=True)
                     yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
+                    continue
+                if name == "get_question":
+                    if req.requested_question_id.strip():
+                        # Question is already in the system prompt; suppress to avoid loops
+                        print("[chat] suppressing get_question — requested_question already provided", flush=True)
+                        continue
+                    # Signal the browser to provide the question data and retry
+                    requested_id = args.get("question_id", "")
+                    print(f"[chat] AI requested get_question: {requested_id}", flush=True)
+                    yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
                     continue
                 payload: dict = {"type": "tool_call", "tool": name}
                 if "template" in args:

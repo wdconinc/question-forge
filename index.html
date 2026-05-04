@@ -1300,11 +1300,14 @@ function loadState() {
         state.questionSets = p.questionSets;
         state.selectedSet = p.selectedSet || (p.questionSets[0]?.id ?? null);
       } else if (p.questionOrder) {
-        // Migrate old flat format to a single default set
+        // Migrate old flat format to a single default set.
+        // If legacyPrompt is empty, fall back to the OpenStax default from PR#15.
+        const defaultPrompt = legacyPrompt ||
+          "This exam is for an algebra-based introductory physics course (OpenStax College Physics 2e).";
         state.questionSets = [{
           id: "set_default",
           name: "Question Set",
-          prompt: legacyPrompt,
+          prompt: defaultPrompt,
           enabled: true,
           questionOrder: p.questionOrder,
           collapsed: false,
@@ -2479,12 +2482,21 @@ async function main() {
 
 // ── AI Chat ────────────────────────────────────────────────────────────────
 
+// Opening line of the OLD default system prompt (contained OpenStax course description).
+// Used to migrate persisted AI state from sessions that saved the prompt verbatim.
+const OLD_SYSTEM_PROMPT_OPENING =
+  "You are an expert physics exam question author helping edit a parametrized " +
+  "multiple-choice question for an algebra-based introductory physics course " +
+  "(OpenStax College Physics 2e).";
+const NEW_SYSTEM_PROMPT_OPENING =
+  "You are an expert physics exam question author helping edit a parametrized " +
+  "multiple-choice question.";
+
 // Default system prompt shown in the UI as a starting point.
 // Follows the recommended markdown-header format for Gemini system prompts.
 const DEFAULT_SYSTEM_PROMPT = `\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question for an algebra-based introductory physics course \
-(OpenStax College Physics 2e).
+multiple-choice question.
 
 ## Python generator function
 
@@ -2555,7 +2567,16 @@ function loadAIState() {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
     if (s.url)     aiState.url     = s.url;
     if (s.token)   aiState.token   = s.token;
-    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") aiState.systemPrompt = s.systemPrompt.trim();
+    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") {
+      let sp = s.systemPrompt.trim();
+      // Migration: if the saved prompt still contains the old OpenStax opening line,
+      // replace it with the new generic opening so the course context comes from
+      // the question-set prompt instead.
+      if (sp.startsWith(OLD_SYSTEM_PROMPT_OPENING)) {
+        sp = NEW_SYSTEM_PROMPT_OPENING + sp.slice(OLD_SYSTEM_PROMPT_OPENING.length);
+      }
+      aiState.systemPrompt = sp;
+    }
     if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
     if (typeof s.panelOpen === "boolean") aiState.panelOpen = s.panelOpen;
     if (typeof s.panelWidth === "number") aiState.panelWidth = s.panelWidth;
@@ -2841,10 +2862,10 @@ async function doSendChat() {
 
   let createCount = 0;
 
-  // Inner function: performs one fetch+stream attempt with the given bankSummary.
-  // Returns true if the AI requested the question bank (caller should retry with
-  // the bank summary), false when the turn is complete.
-  const _doRequest = async (bankSummary) => {
+  // Inner function: performs one fetch+stream attempt with the given bankSummary
+  // and optional requestedQuestion data.
+  // Returns an object: { needsBank: bool, neededQuestionId: string|null }
+  const _doRequest = async (bankSummary, requestedQuestion = null) => {
     const _chatAbort = new AbortController();
     const _chatTimeout = setTimeout(() => _chatAbort.abort(new Error("Request timed out after 90s")), 90000);
     let res;
@@ -2867,6 +2888,9 @@ async function doSendChat() {
           bank_summary: bankSummary,
           preview_error: lastPreviewError || "",
           question_bank_summary: questionBankSummary,
+          requested_question_id: requestedQuestion?.question_id || "",
+          requested_question_template: requestedQuestion?.template || "",
+          requested_question_python_code: requestedQuestion?.python_code || "",
         }),
       });
     } finally {
@@ -2885,6 +2909,7 @@ async function doSendChat() {
     let buf = "";
     let streamDone = false;
     let needsBankSummary = false;
+    let neededQuestionId = null;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -2918,6 +2943,12 @@ async function doSendChat() {
               // Cancel the reader immediately so no further events from this
               // response are processed (prevents side-effects from any tool
               // calls or text the model may have also emitted).
+              reader.cancel();
+              streamDone = true;
+              break;
+            } else if (evt.tool === "get_question") {
+              console.log("[AI] AI requested question:", evt.question_id, "— aborting stream and retrying with question data");
+              neededQuestionId = evt.question_id || null;
               reader.cancel();
               streamDone = true;
               break;
@@ -2976,23 +3007,60 @@ async function doSendChat() {
       }
     }
 
-    return needsBankSummary;
+    return { needsBank: needsBankSummary, neededQuestionId };
   };
 
   let assistantText = "";
 
   try {
-    // First attempt — no bank summary
-    const needsBank = await _doRequest("");
+    // Retry loop: the AI may request the question bank or a specific question
+    // before it has enough context to respond.  We honour both signals in any
+    // order, up to MAX_TOOL_RETRIES total retries.
+    const MAX_TOOL_RETRIES = 3;
+    let activeBankSummary = "";
+    let requestedQuestion = null;
+    let retries = 0;
 
-    if (needsBank) {
-      // AI requested the question bank: build it and retry transparently
-      aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
-      assistantText = "";
-      const stillNeedsBank = await _doRequest(_buildBankSummary());
-      if (stillNeedsBank) {
-        console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
+    let { needsBank, neededQuestionId } = await _doRequest("", null);
+
+    while ((needsBank || neededQuestionId) && retries < MAX_TOOL_RETRIES) {
+      retries++;
+
+      if (needsBank) {
+        if (activeBankSummary) {
+          console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
+          break;
+        }
+        aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
+        assistantText = "";
+        activeBankSummary = _buildBankSummary();
       }
+
+      if (neededQuestionId) {
+        if (requestedQuestion?.question_id === neededQuestionId) {
+          console.warn("[AI] AI requested the same question again after it was already provided — ignoring.");
+          break;
+        }
+        const neededQ = state?.questions?.[neededQuestionId];
+        if (!neededQ) {
+          console.warn("[AI] AI requested unknown question:", neededQuestionId);
+          aEl.innerHTML = `<span style="color:#e65100">⚠ AI requested question <b>${escHtml(neededQuestionId)}</b> which does not exist in the bank.</span>`;
+          break;
+        }
+        aEl.innerHTML = `<span style="color:#aaa">Fetching question <b>${escHtml(neededQuestionId)}</b>…</span>`;
+        assistantText = "";
+        requestedQuestion = {
+          question_id: neededQuestionId,
+          template: neededQ.template || "",
+          python_code: neededQ.python_code || "",
+        };
+      }
+
+      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, requestedQuestion));
+    }
+
+    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId)) {
+      console.warn("[AI] reached max tool retries without completing the turn.");
     }
 
     // Only show fallback if NEITHER text nor a tool-call updated the bubble
