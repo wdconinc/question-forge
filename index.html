@@ -456,7 +456,7 @@
       <span id="arr-system-prompt">▶</span> System Prompt
     </div>
     <div class="ai-prompt-section-body collapsed" id="body-system-prompt">
-      <label style="font-weight:400;color:#555;font-size:11px">Customise the AI's base instructions (edit to override the default):
+      <label style="font-weight:400;color:#555;font-size:11px">Customize the AI's base instructions (edit to override the default):
         <textarea id="ai-system-prompt" rows="6" placeholder="System prompt…"></textarea>
       </label>
       <button id="btn-system-prompt-reset" style="font-size:10px;padding:2px 7px;background:#eee;border:1px solid #ccc;border-radius:3px;cursor:pointer;margin-top:2px">↺ Reset to default</button>
@@ -2096,7 +2096,7 @@ const aiState = {
   connected: false,
   url: "https://question-forge-server.fly.dev",
   token: "phys1020",
-  systemPrompt: DEFAULT_SYSTEM_PROMPT,  // pre-populated default; edit to customise
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,  // pre-populated default; edit to customize
   messages: [],   // {role, content} conversation history sent to LLM
   chatLog: [],    // {role, html, toolBadges} display log — persisted in localStorage
   panelOpen: false,  // whether the chat panel is visible
