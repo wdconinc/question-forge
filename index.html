@@ -2108,7 +2108,7 @@ function loadAIState() {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
     if (s.url)     aiState.url     = s.url;
     if (s.token)   aiState.token   = s.token;
-    if (typeof s.systemPrompt === "string" && s.systemPrompt !== "") aiState.systemPrompt = s.systemPrompt;
+    if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") aiState.systemPrompt = s.systemPrompt;
     if (Array.isArray(s.chatLog)) aiState.chatLog = s.chatLog;
     if (typeof s.panelOpen === "boolean") aiState.panelOpen = s.panelOpen;
     if (typeof s.panelWidth === "number") aiState.panelWidth = s.panelWidth;
@@ -2119,7 +2119,7 @@ function saveAIState() {
   localStorage.setItem("questionForge_ai", JSON.stringify({
     url: aiState.url,
     token: aiState.token,
-    systemPrompt: aiState.systemPrompt,
+    systemPrompt: aiState.systemPrompt.trim() === DEFAULT_SYSTEM_PROMPT.trim() ? "" : aiState.systemPrompt,
     chatLog: aiState.chatLog,
     panelOpen: aiState.panelOpen,
     panelWidth: aiState.panelWidth,
@@ -2378,7 +2378,7 @@ async function doSendChat() {
         body: JSON.stringify({
           messages: aiState.messages,
           template, python_code: pythonCode, question_id: qid,
-          system_prompt: aiState.systemPrompt || "",
+          system_prompt: aiState.systemPrompt.trim() === DEFAULT_SYSTEM_PROMPT.trim() ? "" : aiState.systemPrompt,
           question_set_prompt: state?.settings?.questionSetPrompt || "",
           preview_error: lastPreviewError || "",
         }),
