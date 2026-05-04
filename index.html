@@ -1218,7 +1218,7 @@ const DEFAULT_SETTINGS = {
   duration: "3 hours", examiners: "W. Deconinck",
   seedA: 42, seedB: 137, seedC: 271,
   papers: ["A", "B"], numQuestions: 30,
-  questionSetPrompt: "",
+  questionSetPrompt: "This exam is for an algebra-based introductory physics course (OpenStax College Physics 2e).",
 };
 
 let state = null;
@@ -2064,8 +2064,7 @@ async function main() {
 // Follows the recommended markdown-header format for Gemini system prompts.
 const DEFAULT_SYSTEM_PROMPT = `\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question for an algebra-based introductory physics course \
-(OpenStax College Physics 2e).
+multiple-choice question.
 
 ## Python generator function
 
