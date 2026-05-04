@@ -397,6 +397,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/file-saver@2/dist/FileSaver.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" integrity="sha384-8N8xLUhZ0n52xvLwQvQWv4a8g0z6VqHl6pJ4v8m0h8m+fY8m0hD1JQvV7G0w0m8B" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -1680,9 +1681,10 @@ function showRenderOverlay(paper) {
   // Render markdown → HTML
   const { md, answers, seed } = _renderedPapers[_renderedActivePaper];
   const body = document.getElementById("render-overlay-body");
-  body.innerHTML = marked.parse(md) +
+  const renderedHtml = marked.parse(md) +
     `<div class="answer-key"><strong>Answer Key — Paper ${_renderedActivePaper} (seed=${seed})</strong><br>` +
     answers.map((a, i) => `Q${String(i+1).padStart(2,"0")}: ${a}`).join(" &nbsp; ") + "</div>";
+  body.innerHTML = DOMPurify.sanitize(renderedHtml);
   document.getElementById("render-overlay").classList.add("visible");
   if (window.MathJax?.typesetPromise) MathJax.typesetPromise([body]).catch(console.error);
 }
