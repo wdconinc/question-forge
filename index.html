@@ -2025,7 +2025,13 @@ function setAIDot(state) {
 }
 
 function typesetMath(el) {
-  if (window.MathJax?.typesetPromise) MathJax.typesetPromise([el]).catch(console.error);
+  if (!window.MathJax) return;
+  const run = () => MathJax.typesetPromise([el]).catch(console.error);
+  if (MathJax.startup?.promise) {
+    MathJax.startup.promise.then(run).catch(console.error);
+  } else if (MathJax.typesetPromise) {
+    run();
+  }
 }
 
 function appendChatMsg(role, html, toolBadges, skipLog) {
@@ -2363,7 +2369,7 @@ async function doSendChat() {
     aiState.messages.push({ role: "assistant", content: assistantText || "[tool call]" });
     aiState.chatLog.push({ role: "assistant", html: aEl.innerHTML, toolBadges: [] });
     saveAIState();
-    if (window.MathJax?.typesetPromise) typesetMath(aEl);
+    typesetMath(aEl);
 
   } catch (e) {
     const isAbort = e.name === "AbortError";
