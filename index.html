@@ -10,7 +10,10 @@
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+      display: flex; flex-direction: column;
+      height: 100vh; /* fallback for older browsers */
+      height: 100dvh; /* dynamic viewport height — adapts to visible area on mobile */
+      overflow: hidden;
       background: #fff; color: #222;
     }
 
