@@ -132,6 +132,7 @@ class ChatRequest(BaseModel):
     question_set_prompt: str = "" # optional per-exam context appended to system prompt
     bank_summary: str = ""        # optional summary of all questions in the bank
     preview_error: str = ""       # current error shown in the preview panel (if any)
+    question_bank_summary: str = "" # brief listing of existing question IDs, titles, and topics
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -278,7 +279,27 @@ LaTeX math is written inline as `$...$`.
   You may update both template and python_code in a single call when both need changing.
 - When asked to create a new question, use the create_question tool with a complete
   template and python_code.
-- Otherwise reply in plain text (Markdown is fine).\
+- Otherwise reply in plain text (Markdown is fine).
+
+## Creating multiple questions
+
+When the user asks to create more than one question:
+
+- First check the question set context (if provided) and the existing question bank
+  for topics, coverage gaps, or other guidance on what to create.
+- If you have enough context to choose topics independently (e.g. a syllabus, chapter
+  list, or topic breakdown is available), **select suitable topics yourself** and call
+  create_question once per question without asking the user first.
+- If there is **not** enough context to determine appropriate topics, ask the user a
+  single focused question (e.g. "Which topics or chapters should these questions cover?")
+  and wait for their answer before proceeding.
+- When creating multiple questions, vary difficulty levels and sub-topics to produce a
+  balanced set, and avoid duplicating topics already present in the existing question bank.
+- Each new question **must** have a unique `question_id` that does not already exist in the
+  bank. Use a descriptive snake_case name, e.g. `q_friction_ramp`. If the bank listing is
+  provided, check it and choose IDs that are not already there. The `python_code` must call
+  `render_template` with the **exact same** `question_id` string you provide in this call,
+  because the template file is stored under that name on disk.
 """
 
 def _system_prompt(req: ChatRequest) -> str:
@@ -293,6 +314,11 @@ Current question ID: {qid}
 
 === PYTHON GENERATOR ===
 {req.python_code or "(empty)"}
+"""
+    if req.question_bank_summary.strip():
+        prompt += f"""
+=== EXISTING QUESTIONS IN BANK ===
+{req.question_bank_summary.strip()}
 """
     if req.question_set_prompt.strip():
         prompt += f"""

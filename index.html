@@ -2303,6 +2303,16 @@ async function doSendChat() {
   const template   = templateEditor ? templateEditor.getValue() : "";
   const pythonCode = pythonEditor   ? pythonEditor.getValue()   : "";
 
+  // Build a concise summary of questions already in the bank (capped to avoid oversized prompts)
+  const BANK_SUMMARY_LIMIT = 80;
+  const questionBankSummary = state.questionOrder.slice(0, BANK_SUMMARY_LIMIT).map(id => {
+    const q = state.questions[id]; if (!q) return null;
+    return `- ${id}: ${q.title || id}${q.topic ? ` (topic: ${q.topic})` : ""}`;
+  }).filter(Boolean).join("\n") +
+    (state.questionOrder.length > BANK_SUMMARY_LIMIT
+      ? `\n… (${state.questionOrder.length - BANK_SUMMARY_LIMIT} more questions not shown)`
+      : "");
+
   // Add user message to history and UI
   aiState.messages.push({ role: "user", content: text });
   appendChatMsg("user", escHtml(text));
@@ -2314,6 +2324,8 @@ async function doSendChat() {
   document.getElementById("chat-messages").appendChild(aEl);
   aEl.scrollIntoView({behavior: "smooth"});
   document.getElementById("btn-chat-send").disabled = true;
+
+  let createCount = 0;
 
   // Inner function: performs one fetch+stream attempt with the given bankSummary.
   // Returns true if the AI requested the question bank (caller should retry with
@@ -2337,6 +2349,7 @@ async function doSendChat() {
           question_set_prompt: state?.settings?.questionSetPrompt || "",
           bank_summary: bankSummary,
           preview_error: lastPreviewError || "",
+          question_bank_summary: questionBankSummary,
         }),
       });
     } finally {
@@ -2382,7 +2395,7 @@ async function doSendChat() {
             aEl.scrollIntoView({ behavior: "smooth" });
 
           } else if (evt.type === "tool_call") {
-            if (evt.tool === "get_question_bank") {
+          if (evt.tool === "get_question_bank") {
               console.log("[AI] AI requested question bank — aborting stream and retrying with bank summary");
               needsBankSummary = true;
               // Cancel the reader immediately so no further events from this
@@ -2408,7 +2421,10 @@ async function doSendChat() {
                   template: evt.template || "",
                   python_code: evt.python_code || "",
                 });
-                aEl.innerHTML = `<span style="color:#2e7d32">✓ Creating new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
+                createCount++;
+                aEl.innerHTML = createCount > 1
+                  ? `<span style="color:#2e7d32">✓ Proposing ${createCount} new questions — see cards below ↓</span>`
+                  : `<span style="color:#2e7d32">✓ Proposing new question <b>${escHtml(evt.question_id || "new")}</b> — see card below ↓</span>`;
                 changes = [];
               } else if (evt.tool === "update_template") {
                 changes.push({ tool: "update_template", label: "Jinja2 template",
