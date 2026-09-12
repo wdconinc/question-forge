@@ -124,6 +124,40 @@ test("buildItemNode rejects an invalid answer letter", async () => {
   );
 });
 
+test("buildItemNode (numerical) produces a well-formed <item> with response_num/render_fib, cc.fib.v0p1, and a vargte/varlte tolerance range", async () => {
+  const question = {
+    qid: "q_numeric",
+    title: "q_numeric",
+    type: "numerical",
+    question: "What is the final speed?",
+    answer: 12.3,
+    tolerance: 0.5,
+    unit: "m/s",
+  };
+  const { id, node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assert.equal(id, "q_numeric");
+  assertWellFormedXmlFragment(xml);
+  assert.match(xml, /<fieldlabel>cc_profile<\/fieldlabel><fieldentry>cc\.fib\.v0p1<\/fieldentry>/);
+  assert.match(xml, /<response_num ident="response1" rcardinality="Single" numtype="Decimal">/);
+  assert.match(xml, /<render_fib fibtype="Decimal"/);
+  assert.match(xml, /<vargte respident="response1">11\.8<\/vargte>/);
+  assert.match(xml, /<varlte respident="response1">12\.8<\/varlte>/);
+  assert.match(xml, /<setvar action="Set" varname="SCORE">100<\/setvar>/);
+  assert.ok(!xml.includes("response_label"), "numerical items must not have MC response_labels");
+  assert.ok(!xml.includes("render_choice"), "numerical items must not use render_choice");
+});
+
+test("buildItemNode (numerical) rejects a non-finite answer or tolerance", async () => {
+  const base = { qid: "q_bad_numeric", type: "numerical", question: "x" };
+  await assert.rejects(() =>
+    buildItemNode({ ...base, answer: "not-a-number", tolerance: 0.5 }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  await assert.rejects(() =>
+    buildItemNode({ ...base, answer: 1, tolerance: "not-a-number" }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+});
+
 test("buildObjectBankXml wraps every item directly under one <objectbank> (no <section> nesting)", async () => {
   const q1 = await buildItemNode({ qid: "q01", question: "A", choices: ["1", "2", "3", "4", "5"], answer: "a" }, {
     latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [],

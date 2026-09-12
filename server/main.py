@@ -210,9 +210,10 @@ TOOLS = [
         "function": {
             "name": "create_question",
             "description": (
-                "Create a brand-new parametrized multiple-choice question and add it to the exam. "
-                "Use this when the user asks to create, add, or write a new question. "
-                "The question_id must be a short snake_case identifier, e.g. 'q_friction_ramp'."
+                "Create a brand-new parametrized multiple-choice or numerical-entry question "
+                "and add it to the exam. Use this when the user asks to create, add, or write "
+                "a new question. The question_id must be a short snake_case identifier, "
+                "e.g. 'q_friction_ramp'."
             ),
             "parameters": {
                 "type": "object",
@@ -250,13 +251,16 @@ TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question.
+multiple-choice or numerical-entry question.
 
 ## Python generator function
 
 The Python code must define a `generate(rng: numpy.random.Generator) -> dict` function.
-The function receives a seeded NumPy random generator and must return a dict with
-exactly these keys:
+The function receives a seeded NumPy random generator and must return a dict.
+There are two question types, chosen by the `type` key (default "multiple_choice"
+if omitted) — use whichever the current question already is:
+
+### Multiple choice
 
   question   : str        — full question text (plain text or Markdown / LaTeX)
   choices    : list[str]  — exactly 5 answer choice strings, e.g. ["1.23 m", ...]
@@ -269,10 +273,24 @@ exactly these keys:
 The exam framework automatically shuffles answer positions before printing, so
 there is no need to randomize the correct answer position yourself.
 
+### Numerical entry
+
+  type       : str        — must be "numerical"
+  question   : str        — full question text (plain text or Markdown / LaTeX)
+  answer     : float       — the correct numeric value
+  tolerance  : float       — absolute ± tolerance, resolved via resolve_tolerance()
+  unit       : str        — optional display unit, e.g. "m/s"
+  sig_figs   : int        — optional display precision (default 3)
+  topic      : str        — brief topic label
+  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+
+Numerical questions have no lettered choices and are graded as "within tolerance
+of answer", not by exact match.
+
 ## Helper functions (import from `questions`)
 
 ```python
-from questions import render_template, make_choices, phys_fmt
+from questions import render_template, make_choices, phys_fmt, resolve_tolerance
 ```
 
 - `render_template(question_id: str, params: dict) -> str`
@@ -283,12 +301,17 @@ from questions import render_template, make_choices, phys_fmt
 - `make_choices(correct_val: float, distractors: list[float], fmt: callable) -> list[str]`
   Builds a list of 5 unique, well-spaced choice strings. The correct answer is always
   at index 0 (answer = 'a'). `fmt` is a callable that converts a float to a display
-  string, e.g. `lambda v: f"{v:.2f} m"`.
+  string, e.g. `lambda v: f"{v:.2f} m"`. Multiple choice only.
 
 - `phys_fmt(v: float, sig: int = 3) -> str`
   Formats a number with `sig` significant figures for a printed exam. Automatically
   uses LaTeX scientific notation (e.g. `$1.23 \\times 10^{4}$`) for very large or
   very small values.
+
+- `resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float`
+  Numerical-entry only. Returns an absolute tolerance from either an absolute value
+  (`abs_tol`) or a fraction of `value` (`rel_tol`, e.g. 0.02 for ±2%). Exactly one
+  of the two must be given.
 
 ## Jinja2 template
 

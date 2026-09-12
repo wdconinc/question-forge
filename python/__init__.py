@@ -128,3 +128,14 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
                         break
 
     return result
+
+
+def resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float:
+    """Return an absolute tolerance for a numerical-entry question's answer.
+
+    Exactly one of `abs_tol` (already an absolute ± value) or `rel_tol`
+    (a fraction of `value`, e.g. 0.02 for ±2%) must be given.
+    """
+    if (abs_tol is None) == (rel_tol is None):
+        raise ValueError("resolve_tolerance requires exactly one of abs_tol or rel_tol")
+    return abs_tol if abs_tol is not None else abs(value) * rel_tol
