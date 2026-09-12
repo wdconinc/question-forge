@@ -27,11 +27,15 @@ sys.path = [
 import concurrent.futures
 import hmac
 import json
+import math
 import os
+import threading
 import time
+import types
 from collections.abc import AsyncIterator
 
 import httpx
+import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -432,33 +436,88 @@ def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tupl
 
 # ---------------------------------------------------------------------------
 # Question validation helpers
+#
+# The real exam renderer runs entirely in-browser via Pyodide (see
+# python/exam_core.py + the questions/__init__.py embedded in index.html):
+# it seeds a numpy.random.Generator, execs the question's python_code, and
+# calls generate(rng) with `questions.render_template` monkey-patched to
+# render that question's own template. To catch the same errors server-side
+# without depending on Pyodide (or on index.html, which isn't shipped in the
+# server's Docker image), we reimplement that contract here with plain
+# CPython + numpy and lightweight stand-ins for the questions/ helpers.
 # ---------------------------------------------------------------------------
 
+# Serializes validation runs: each one temporarily registers a "questions"
+# module in sys.modules (so `from questions import ...` resolves inside the
+# exec'd code) whose render_template is monkey-patched to the current
+# template. That's global, mutable state, so concurrent /chat requests must
+# not validate at the same time.
+_VALIDATION_LOCK = threading.Lock()
+
+
+def _stub_make_choices(correct_val: float, distractors: list, fmt, min_spacing: float = 0.12) -> list[str]:
+    """Simplified stand-in for questions.make_choices() — just enough to run
+    AI-generated code without crashing. Doesn't enforce uniqueness/spacing;
+    that real logic lives in the browser's questions/__init__.py."""
+    values = ([correct_val, *list(distractors)] + [correct_val] * 4)[:5]
+    return [fmt(v) for v in values]
+
+
+def _stub_phys_fmt(v: float, sig: int = 3) -> str:
+    if not math.isfinite(v) or v == 0:
+        return "0"
+    return f"{v:.{sig}g}"
+
+
 def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
-    """Execute python_code, call generate_params(), render template.
+    """Execute python_code, call generate(rng), and confirm it returns a
+    well-formed question dict, using render_template (backed by `template`)
+    for any `from questions import ...` the code performs.
 
     Runs in a thread pool with a 5-second timeout to guard against infinite
     loops in AI-generated code.  Returns (ok, error_message).
     """
     def _run() -> tuple[bool, str]:
         try:
-            namespace: dict = {}
-            exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
-            generate = namespace.get("generate_params")
-            if generate is None:
-                return False, "python_code must define a generate_params() function"
-            params = generate()
-            if not isinstance(params, dict):
-                return False, f"generate_params() must return a dict, got {type(params).__name__}"
-            env = JinjaEnv(undefined=StrictUndefined)
-            rendered = env.from_string(template).render(**params)
-            if not rendered.strip():
-                return False, "Template rendered to an empty string"
+            jinja_env = JinjaEnv(
+                trim_blocks=True,
+                lstrip_blocks=True,
+                keep_trailing_newline=False,
+                undefined=StrictUndefined,
+            )
+            compiled_template = jinja_env.from_string(template)
+
+            questions_module = types.ModuleType("questions")
+            questions_module.render_template = (
+                lambda name, params: compiled_template.render(**params).strip()
+            )
+            questions_module.make_choices = _stub_make_choices
+            questions_module.phys_fmt = _stub_phys_fmt
+            sys.modules["questions"] = questions_module
+            try:
+                namespace: dict = {}
+                exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
+                generate = namespace.get("generate")
+                if generate is None:
+                    return False, "python_code must define a generate(rng) function"
+                result = generate(np.random.default_rng())
+            finally:
+                sys.modules.pop("questions", None)
+
+            if not isinstance(result, dict):
+                return False, f"generate(rng) must return a dict, got {type(result).__name__}"
+            if not str(result.get("question", "")).strip():
+                return False, "generate(rng) must return a non-empty 'question'"
+            choices = result.get("choices")
+            if not (isinstance(choices, list) and len(choices) == 5):
+                return False, "generate(rng) must return exactly 5 'choices'"
+            if result.get("answer") not in ("a", "b", "c", "d", "e"):
+                return False, "generate(rng) must return an 'answer' of 'a'-'e'"
             return True, ""
         except Exception as exc:  # noqa: BLE001
             return False, f"{type(exc).__name__}: {exc}"
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    with _VALIDATION_LOCK, concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(_run)
         try:
             return future.result(timeout=5)
@@ -486,9 +545,11 @@ async def _gemini_fix_call(
                     f"Validation failed: {error}\n\n"
                     "Please fix the template and python_code so they work together without errors. "
                     "Requirements:\n"
-                    "  • python_code must define a generate_params() function that returns a dict\n"
-                    "  • All Jinja2 variables in the template must be keys in that dict\n"
-                    "  • The template must render without exceptions using the generated params"
+                    "  • python_code must define a generate(rng: numpy.random.Generator) -> dict function\n"
+                    "  • It must return a dict with 'question', 'choices' (exactly 5), 'answer' ('a'-'e'),\n"
+                    "    'topic', and 'difficulty'\n"
+                    "  • If it calls render_template(question_id, params), every Jinja2 variable in the\n"
+                    "    template must be a key in params, and the template must render without exceptions"
                 )
             },
         }}]},
