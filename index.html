@@ -604,6 +604,23 @@
       </label>
     </div>
   </div>
+
+  <div class="ai-prompt-section">
+    <div class="ai-prompt-section-hdr" id="hdr-textbook">
+      <span id="arr-textbook">▶</span> Textbook Grounding
+    </div>
+    <div class="ai-prompt-section-body collapsed" id="body-textbook">
+      <div style="font-weight:400;color:#555;font-size:11px;margin-bottom:4px">
+        Books the AI may search when writing questions for the selected set:
+      </div>
+      <div id="ai-textbook-books" style="max-height:120px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:4px 6px;background:#fafafa"></div>
+      <label style="font-weight:400;color:#555;font-size:11px;margin-top:8px">
+        <span>Limit to chapters (optional), e.g. 4-6, 9</span>
+        <input type="text" id="ai-textbook-chapters" placeholder="all chapters">
+      </label>
+      <div id="ai-textbook-credit" style="font-size:10px;color:#888;margin-top:6px;line-height:1.45"></div>
+    </div>
+  </div>
 </div>
 
 <!-- QTI export paper-choice popover (populated dynamically) -->
@@ -1497,6 +1514,59 @@ function syncQsPromptPopover() {
   if (qsEl) qsEl.value = set ? (set.prompt || "") : "";
   const typeEl = document.getElementById("ai-qs-type");
   if (typeEl) typeEl.value = set ? (set.questionType || DEFAULT_QUESTION_TYPE) : DEFAULT_QUESTION_TYPE;
+  syncTextbookPopover();
+}
+
+// Textbook scope lives on the question set, not globally: "Midterm 1" is
+// chapters 1-8 and "Midterm 2" is 9-16, and they are different sets.
+async function syncTextbookPopover() {
+  const booksEl = document.getElementById("ai-textbook-books");
+  const chaptersEl = document.getElementById("ai-textbook-chapters");
+  const creditEl = document.getElementById("ai-textbook-credit");
+  if (!booksEl || !chaptersEl) return;
+
+  const manifest = await _getTextbookManifest();
+  if (!manifest) {
+    booksEl.innerHTML = '<div style="color:#999;font-style:italic;font-size:11px">' +
+      'No textbook corpus found. Build it with <code>scripts/build_textbook_corpus.py</code> ' +
+      '(see the README); the AI works without it.</div>';
+    if (creditEl) creditEl.textContent = "";
+    return;
+  }
+
+  const set = state.questionSets.find(s => s.id === state.selectedSet);
+  const enabled = new Set(set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+  booksEl.innerHTML = "";
+  for (const book of manifest.books) {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;flex-direction:row;align-items:center;gap:5px;" +
+      "font-weight:400;font-size:11px;color:#333;margin:0 0 2px;cursor:pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = enabled.has(book.slug);
+    cb.style.cssText = "margin:0;accent-color:#f0ab00";
+    cb.addEventListener("change", () => {
+      const target = state.questionSets.find(s => s.id === state.selectedSet);
+      if (!target) return;
+      const next = new Set(target.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+      if (cb.checked) next.add(book.slug); else next.delete(book.slug);
+      target.textbookBooks = [...next];
+      debounceSave();
+    });
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(`${book.title} (${book.sections} sections)`));
+    booksEl.appendChild(row);
+  }
+
+  const { formatChapterSpec } = await import("./src/textbook_search.js");
+  chaptersEl.value = formatChapterSpec(set?.textbookChapters || []);
+
+  if (creditEl) {
+    // CC BY-NC-SA requires the credit to travel with the text.
+    creditEl.innerHTML = "Textbook content © OpenStax, " +
+      '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>. ' +
+      'Access for free at <a href="https://openstax.org" target="_blank" rel="noopener">openstax.org</a>.';
+  }
 }
 
 function renderSidebar() {
@@ -2559,6 +2629,17 @@ function bindSettings() {
       debounceSave();
     });
   });
+  const chaptersEl = document.getElementById("ai-textbook-chapters");
+  if (chaptersEl) {
+    chaptersEl.addEventListener("input", async () => {
+      const set = state.questionSets.find(s => s.id === state.selectedSet);
+      if (!set) return;
+      const { parseChapterSpec } = await import("./src/textbook_search.js");
+      set.textbookChapters = parseChapterSpec(chaptersEl.value);
+      debounceSave();
+    });
+  }
+
   // AI popover question-set prompt syncs with the selected set's prompt
   const qsPromptEl = document.getElementById("ai-qs-prompt");
   if (qsPromptEl) {
@@ -3214,9 +3295,16 @@ async function _getTextbookManifest() {
   return _textbookManifest;
 }
 
+// Matches the OpenStax line already in the default question-set prompt.  New
+// and pre-existing sets both pick this up, so no state migration is needed --
+// but an explicitly empty list means "no textbook", not "fall back to the
+// default", which is why this uses ?? rather than ||.
+const DEFAULT_TEXTBOOK_BOOKS = ["college-physics-2e"];
+
 function _activeSetTextbookScope() {
   const set = state.questionSets.find(s => s.id === state.selectedSet);
-  return { books: set?.textbookBooks || [], chapters: set?.textbookChapters || [] };
+  const books = set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS;
+  return { books, chapters: set?.textbookChapters || [], disabled: books.length === 0 };
 }
 
 // The always-on catalog is chapter-level on purpose: seven books come to ~740
@@ -3224,10 +3312,12 @@ function _activeSetTextbookScope() {
 // just fix a typo.  Chapters cost ~1.7k and still let the model name section
 // ids it can then request directly.
 async function _buildTextbookCatalog() {
+  const scope = _activeSetTextbookScope();
+  if (scope.disabled) return "";
   const manifest = await _getTextbookManifest();
   if (!manifest) return "";
   const { buildCatalog } = await import("./src/textbook_search.js");
-  return buildCatalog(manifest, _activeSetTextbookScope());
+  return buildCatalog(manifest, scope);
 }
 
 async function _resolveTextbookSearch(req) {
@@ -3846,6 +3936,7 @@ function setupAIChat() {
   setupCollapsible("hdr-system-prompt", "body-system-prompt", "arr-system-prompt");
   setupCollapsible("hdr-qs-type",       "body-qs-type",       "arr-qs-type");
   setupCollapsible("hdr-qs-prompt",     "body-qs-prompt",     "arr-qs-prompt");
+  setupCollapsible("hdr-textbook",      "body-textbook",      "arr-textbook");
 
   // System prompt live save
   if (sysEl) {

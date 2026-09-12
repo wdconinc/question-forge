@@ -246,3 +246,35 @@ test("the context ceiling is a real number other modules can rely on", () => {
   assert.equal(typeof MAX_CONTEXT_CHARS, "number");
   assert.ok(MAX_CONTEXT_CHARS > 0);
 });
+
+test("parseChapterSpec understands ranges, lists and whitespace", async () => {
+  const { parseChapterSpec } = await import("./textbook_search.js");
+  assert.deepEqual(parseChapterSpec("4-6, 9"), [4, 5, 6, 9]);
+  assert.deepEqual(parseChapterSpec(" 9 , 4 - 6 "), [4, 5, 6, 9]);
+  assert.deepEqual(parseChapterSpec("6-4"), [4, 5, 6], "reversed ranges still work");
+  assert.deepEqual(parseChapterSpec("3,3,3"), [3], "duplicates collapse");
+});
+
+test("parseChapterSpec treats garbage as no pin rather than an empty pin", async () => {
+  const { parseChapterSpec } = await import("./textbook_search.js");
+  // An empty list means "every chapter" downstream, which is the safe reading:
+  // a typo must not silently narrow retrieval to nothing.
+  assert.deepEqual(parseChapterSpec("chapters four to six"), []);
+  assert.deepEqual(parseChapterSpec(""), []);
+  assert.deepEqual(parseChapterSpec(null), []);
+});
+
+test("parseChapterSpec refuses to expand an absurd range", async () => {
+  const { parseChapterSpec } = await import("./textbook_search.js");
+  assert.deepEqual(parseChapterSpec("1-9999"), []);
+});
+
+test("formatChapterSpec round-trips through parseChapterSpec", async () => {
+  const { parseChapterSpec, formatChapterSpec } = await import("./textbook_search.js");
+  for (const spec of ["4-6, 9", "1", "1, 3, 5", "2-4, 7-9"]) {
+    assert.equal(formatChapterSpec(parseChapterSpec(spec)), spec);
+  }
+  // Two adjacent chapters stay a list; three or more collapse to a range.
+  assert.equal(formatChapterSpec([1, 2]), "1, 2");
+  assert.equal(formatChapterSpec([1, 2, 3]), "1-3");
+});

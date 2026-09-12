@@ -265,6 +265,43 @@ export function formatSectionsForPrompt(result, opts = {}) {
 }
 
 /**
+ * Parse a chapter pin like "4-6, 9" into [4, 5, 6, 9].
+ *
+ * Lenient by design: this is a free-text field an instructor types between
+ * classes, so "4 - 6", "9,4-6" and "6-4" all mean the same thing, and garbage
+ * yields an empty pin (= every chapter) rather than an error that silently
+ * narrows retrieval to nothing.
+ */
+export function parseChapterSpec(spec) {
+  const out = new Set();
+  for (const part of String(spec || "").split(",")) {
+    const range = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
+    if (range) {
+      const [lo, hi] = [Number(range[1]), Number(range[2])].sort((a, b) => a - b);
+      // A fat-fingered "1-900" should not enumerate 900 chapters.
+      if (hi - lo <= 200) for (let n = lo; n <= hi; n++) out.add(n);
+      continue;
+    }
+    const one = part.trim().match(/^\d+$/);
+    if (one) out.add(Number(part.trim()));
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/** Render [4,5,6,9] back to "4-6, 9" for the input field. */
+export function formatChapterSpec(chapters) {
+  const sorted = [...new Set((chapters || []).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < sorted.length; ) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    parts.push(j - i >= 2 ? `${sorted[i]}-${sorted[j]}` : sorted.slice(i, j + 1).join(", "));
+    i = j + 1;
+  }
+  return parts.join(", ");
+}
+
+/**
  * The always-on chapter catalog.
  *
  * Chapter level, not section level, on purpose: seven books come to ~740

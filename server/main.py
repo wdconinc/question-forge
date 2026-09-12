@@ -669,6 +669,11 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
         excluded.add("get_question")
     if req.textbook_context.strip():
         excluded.add("search_textbook")
+    elif not req.textbook_catalog.strip():
+        # No catalog means no corpus was built, or the question set has every
+        # book unchecked.  Offering the tool would invite a call the client
+        # cannot answer.
+        excluded.add("search_textbook")
     if excluded:
         gemini_tools = [{
             "functionDeclarations": [
