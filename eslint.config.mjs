@@ -32,4 +32,19 @@ export default [
       },
     },
   },
+  {
+    files: ["src/**/*.js"],
+    rules: {
+      ...js.configs.recommended.rules,
+    },
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        // Optionally referenced (typeof JSZip !== "undefined") as a fallback
+        // when no zipFactory is injected — see qti_export.js buildQtiPackage.
+        JSZip: "readonly",
+      },
+    },
+  },
 ];

@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "description": "A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (and similar courses). Uses [Pyodide](https://pyodide.org/) to run Python question-generation code directly in your browser. No server required. All data stays in `localStorage`.",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "lint": "eslint index.html",
+    "lint": "eslint index.html src/**/*.js",
     "lint:server": "ruff check server/main.py",
-    "lint:all": "eslint index.html && ruff check server/main.py"
+    "lint:all": "eslint index.html src/**/*.js && ruff check server/main.py",
+    "test": "node --test src/*.test.js"
   },
   "repository": {
     "type": "git",

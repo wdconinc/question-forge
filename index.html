@@ -336,6 +336,15 @@
       resize: vertical; min-height: 70px; width: 100%; box-sizing: border-box;
     }
     #ai-conn-popover textarea:focus { outline: none; border-color: #1e3a5f; }
+
+    #qti-paper-popover {
+      display: none; position: fixed; z-index: 8000;
+      background: white; border: 1px solid #ccc; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.18); padding: 12px;
+      font-size: 12px;
+    }
+    #qti-paper-popover.open { display: block; }
+
     .ai-prompt-section { margin-top: 10px; }
     .ai-prompt-section-hdr {
       display: flex; align-items: center; gap: 5px; cursor: pointer;
@@ -479,6 +488,7 @@
   <div class="tb-sep"></div>
   <button class="btn btn-primary" id="btn-render-all" disabled title="Render enabled papers to Markdown">▶ Render All</button>
   <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
+  <button class="btn btn-secondary" id="btn-export-qti" title="Export enabled questions as an IMS Common Cartridge question bank (for D2L Question Library import)">⬇ Export QTI</button>
   <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
   <button class="btn btn-secondary" id="btn-reset" style="margin-left:auto;font-size:11px;opacity:0.75" title="Reset to default question bank">↺ Reset</button>
   <div class="tb-sep"></div>
@@ -525,6 +535,9 @@
     </div>
   </div>
 </div>
+
+<!-- QTI export paper-choice popover (populated dynamically) -->
+<div id="qti-paper-popover"></div>
 
 <!-- Main -->
 <div id="main">
@@ -888,7 +901,9 @@ def render_paper(question_bank, question_order, meta, seed):
             ns = {}
             exec(compile(q["python_code"], qid + ".py", "exec"), ns)
             q_rng = np.random.default_rng(rng.integers(0, 2**63))
-            data_orig.append(ns["generate"](q_rng))
+            d = ns["generate"](q_rng)
+            d["qid"] = qid
+            data_orig.append(d)
         except Exception as exc:
             raise RuntimeError(f"QUESTION_ERROR\n{qid}\n{exc}") from exc
         finally:
@@ -904,7 +919,7 @@ def render_paper(question_bank, question_order, meta, seed):
         block, ans = render_question_block(i, d)
         lines.append(block)
         answers.append(ans)
-    return "\n".join(lines), answers
+    return "\n".join(lines), answers, data
 
 </script>
 
@@ -1463,6 +1478,13 @@ function makeSetGroup(set) {
   addQBtn.setAttribute("aria-label", "Add question to this set");
   addQBtn.textContent = "+";
 
+  const exportQtiBtn = document.createElement("button");
+  exportQtiBtn.type = "button";
+  exportQtiBtn.className = "set-btn";
+  exportQtiBtn.title = "Export this set to IMS QTI (for D2L Question Library import)";
+  exportQtiBtn.setAttribute("aria-label", `Export ${set.name || "Question Set"} to IMS QTI`);
+  exportQtiBtn.textContent = "\ud83d\udce4";
+
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "set-btn";
@@ -1470,7 +1492,7 @@ function makeSetGroup(set) {
   deleteBtn.setAttribute("aria-label", `Delete set ${set.name || "Question Set"}`);
   deleteBtn.textContent = "\ud83d\uddd1";
 
-  actions.append(promptBtn, addQBtn, deleteBtn);
+  actions.append(promptBtn, addQBtn, exportQtiBtn, deleteBtn);
   hdr.append(expandBtn, enableCb, nameSpan, actions);
 
   // ── Prompt row ──
@@ -1545,6 +1567,11 @@ function makeSetGroup(set) {
   addQBtn.addEventListener("click", e => {
     e.stopPropagation();
     doNewQuestion(set.id);
+  });
+
+  exportQtiBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    doExportSetQti(set.id, exportQtiBtn);
   });
 
   deleteBtn.addEventListener("click", e => {
@@ -1960,9 +1987,10 @@ function doFixWithAI() {
 let _renderedPapers = {};   // { paper: { md, answers, html } }
 let _renderedActivePaper = null;
 
-async function doRenderAll() {
-  if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
-  // Collect enabled questions from all enabled sets in order
+// Collect enabled questions from all enabled sets, in order, plus a qid -> question map.
+// Shared by doRenderAll() and the QTI export handlers below, since answer-position
+// balancing must always run over this same full enabled pool (see materializePaper).
+function collectEnabledPool() {
   const enabledOrder = [];
   for (const set of state.questionSets) {
     if (set.enabled === false) continue;
@@ -1970,6 +1998,37 @@ async function doRenderAll() {
       if (state.questions[qid]?.enabled !== false) enabledOrder.push(qid);
     }
   }
+  const enabledBank = {};
+  for (const id of enabledOrder) enabledBank[id] = state.questions[id];
+  return { enabledOrder, enabledBank };
+}
+
+// Materialize one paper (one seed) via Pyodide: runs every enabled question's
+// generate(rng), applies the paper-wide answer-position balancing, and returns
+// the rendered markdown/answers alongside the structured per-question data
+// ({ qid, question, choices, answer, topic, difficulty }, in final paper order).
+async function materializePaper(paper, seed, enabledBank, enabledOrder, meta) {
+  pyodide.globals.set("_bank_json",  JSON.stringify(enabledBank));
+  pyodide.globals.set("_order_json", JSON.stringify(enabledOrder));
+  pyodide.globals.set("_meta_json",  JSON.stringify({ ...meta, paper }));
+  pyodide.globals.set("_seed_int",   seed);
+
+  const rJson = await pyodide.runPythonAsync(`
+import json, exam_core, importlib
+importlib.reload(exam_core)
+_bank  = json.loads(_bank_json)
+_order = json.loads(_order_json)
+_meta  = json.loads(_meta_json)
+_md, _ans, _data = exam_core.render_paper(_bank, _order, _meta, int(_seed_int))
+json.dumps({"md": _md, "answers": _ans, "data": _data})
+`);
+  const { md, answers, data } = JSON.parse(rJson);
+  return { md, answers, seed, data };
+}
+
+async function doRenderAll() {
+  if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
+  const { enabledOrder, enabledBank } = collectEnabledPool();
   if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
   if (enabledOrder.length % 5 !== 0) {
     if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
@@ -1977,8 +2036,6 @@ async function doRenderAll() {
   const papers = (state.settings.papers || ["A"]);
   if (papers.length === 0) { toast("No papers selected!", "error"); return; }
 
-  const enabledBank = {};
-  for (const id of enabledOrder) enabledBank[id] = state.questions[id];
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
 
   setProgress(0);
@@ -1993,22 +2050,7 @@ async function doRenderAll() {
       const seed = state.settings[seedKey] ?? (42 + pi * 95);
       toast(`Rendering Paper ${paper}\u2026`, "");
 
-      pyodide.globals.set("_bank_json",  JSON.stringify(enabledBank));
-      pyodide.globals.set("_order_json", JSON.stringify(enabledOrder));
-      pyodide.globals.set("_meta_json",  JSON.stringify({ ...meta, paper }));
-      pyodide.globals.set("_seed_int",   seed);
-
-      const rJson = await pyodide.runPythonAsync(`
-import json, exam_core, importlib
-importlib.reload(exam_core)
-_bank  = json.loads(_bank_json)
-_order = json.loads(_order_json)
-_meta  = json.loads(_meta_json)
-_md, _ans = exam_core.render_paper(_bank, _order, _meta, int(_seed_int))
-json.dumps({"md": _md, "answers": _ans})
-`);
-      const { md, answers } = JSON.parse(rJson);
-      _renderedPapers[paper] = { md, answers, seed };
+      _renderedPapers[paper] = await materializePaper(paper, seed, enabledBank, enabledOrder, meta);
       setProgress((pi + 1) / papers.length * 100);
     }
     toast("Render complete \u2713", "success");
@@ -2203,6 +2245,135 @@ async function latexToMathML(tex, { display = false } = {}) {
     throw new Error(`MathJax could not parse TeX snippet: ${tex}`);
   }
   return mml;
+}
+
+// ── Export QTI (IMS Common Cartridge question bank for D2L Question Library import) ───────
+// Reuses the exact same per-paper materialization as Render All (materializePaper,
+// above) so exported answer keys/choice order match that paper's actual balanced
+// answer positions, rather than the raw always-"a" authoring order. Uses
+// latexToMathML() (above) to embed math in the exported package.
+
+function sanitizeFilename(s) {
+  return String(s).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "question_set";
+}
+
+// If more than one paper is enabled, ask which one to export via a small popover;
+// if exactly one is enabled, use it immediately with no extra prompt.
+function chooseExportPaper(triggerEl, onChosen) {
+  const papers = state.settings.papers || [];
+  if (papers.length === 0) { toast("No papers selected — enable at least one paper (A/B/C) first", "error"); return; }
+  if (papers.length === 1) { onChosen(papers[0]); return; }
+  openQtiPaperPopover(triggerEl, papers, onChosen);
+}
+
+function openQtiPaperPopover(triggerEl, papers, onChosen) {
+  const pop = document.getElementById("qti-paper-popover");
+  pop.innerHTML = "";
+
+  const label = document.createElement("div");
+  label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
+  label.textContent = "Export which paper?";
+  pop.appendChild(label);
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px";
+  for (const paper of papers) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    // Note: deliberately not the .btn.btn-secondary class — that's styled
+    // (white text, translucent white background) for the dark toolbar, and
+    // would be invisible against this popover's white background.
+    btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
+    btn.textContent = `Paper ${paper}`;
+    btn.addEventListener("click", () => {
+      pop.classList.remove("open");
+      onChosen(paper);
+    });
+    row.appendChild(btn);
+  }
+  pop.appendChild(row);
+
+  const rect = triggerEl.getBoundingClientRect();
+  pop.style.right = "auto";
+  pop.style.bottom = "auto";
+  pop.style.top = (rect.bottom + 4) + "px";
+  pop.style.left = rect.left + "px";
+  pop.classList.add("open");
+
+  // Clamp horizontally so the popover never overflows either edge of the
+  // viewport, regardless of where the trigger button happens to sit
+  // (a toolbar button near the left edge, or a per-set icon in the sidebar).
+  const margin = 8;
+  const popRect = pop.getBoundingClientRect();
+  if (popRect.right > window.innerWidth - margin) {
+    pop.style.left = Math.max(margin, window.innerWidth - popRect.width - margin) + "px";
+  }
+  if (pop.getBoundingClientRect().left < margin) {
+    pop.style.left = margin + "px";
+  }
+
+  const closeOnOutsideClick = e => {
+    if (!pop.contains(e.target) && e.target !== triggerEl) {
+      pop.classList.remove("open");
+      document.removeEventListener("click", closeOnOutsideClick);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closeOnOutsideClick), 0);
+}
+
+// qidFilter: null to export every enabled question, or an array of qids to
+// export just one question set's subset (still materialized against the FULL
+// enabled pool first — see materializePaper — then filtered down afterward).
+async function exportQtiForPaper(paper, qidFilter, filenameHint) {
+  if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
+  const { enabledOrder, enabledBank } = collectEnabledPool();
+  if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
+  if (enabledOrder.length % 5 !== 0) {
+    if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
+  }
+  const meta = { ...state.settings, numQuestions: enabledOrder.length };
+  const seed = state.settings[`seed${paper}`] ?? 42;
+
+  toast(`Materializing Paper ${paper} for QTI export…`, "");
+  let data;
+  try {
+    ({ data } = await materializePaper(paper, seed, enabledBank, enabledOrder, meta));
+  } catch (e) {
+    console.error(e);
+    toast("QTI export failed: " + (e.message || String(e)), "error");
+    return;
+  }
+
+  const wanted = qidFilter ? new Set(qidFilter) : null;
+  const selected = (wanted ? data.filter(d => wanted.has(d.qid)) : data)
+    .map(d => ({ ...d, title: state.questions[d.qid]?.title || d.qid }));
+  if (selected.length === 0) { toast("Nothing to export for this selection", "error"); return; }
+
+  try {
+    const { buildQtiPackage } = await import("./src/qti_export.js");
+    const { blob, failures } = await buildQtiPackage(selected, { latexToMathML, manifestId: filenameHint });
+    saveAs(blob, `${filenameHint}_Paper${paper}_qti.zip`);
+    if (failures.length > 0) {
+      toast(`QTI exported with ${failures.length} math conversion issue(s) — see console`, "error");
+      console.warn("QTI export MathML conversion failures:", failures);
+    } else {
+      toast("QTI package exported ✓", "success");
+    }
+  } catch (e) {
+    console.error(e);
+    toast("QTI export failed: " + (e.message || String(e)), "error");
+  }
+}
+
+async function doExportQti(e) {
+  const trigger = e?.currentTarget || document.getElementById("btn-export-qti");
+  chooseExportPaper(trigger, paper => exportQtiForPaper(paper, null, "question_forge"));
+}
+
+async function doExportSetQti(setId, triggerEl) {
+  const set = state.questionSets.find(s => s.id === setId);
+  if (!set) return;
+  chooseExportPaper(triggerEl, paper => exportQtiForPaper(paper, set.questionOrder, sanitizeFilename(set.name || setId)));
 }
 
 // ── Settings binding ───────────────────────────────────────────────────────
@@ -2426,6 +2597,7 @@ async function main() {
   on("btn-download-md",    doDownloadMD);
   on("btn-download-pdf",   doDownloadPDF);
   on("btn-export-zip", doExportZip);
+  on("btn-export-qti", doExportQti);
   on("btn-import",     doImportZip);
   on("btn-import-sb",  doImportZip);
   on("btn-new-set",    doNewSet);
