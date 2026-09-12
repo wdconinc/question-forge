@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      # server/questions.py is a verbatim copy of python/__init__.py. Editing the
+      # canonical file alone will NOT redeploy the server - mirror it into server/.
       - "server/**"
   workflow_dispatch:
 
