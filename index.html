@@ -2815,7 +2815,7 @@ function saveAIState() {
 function setAIDot(state) {
   const dot = document.getElementById("chat-status-dot");
   if (!dot) return;
-  dot.className = ""; dot.classList.add(state === "connected" ? "connected" : state === "error" ? "error" : "");
+  dot.className = ""; dot.classList.add(state === "connected" ? "connected" : state === "error" ? "error" : "disconnected");
   dot.title = state === "connected" ? `Connected to ${aiState.url}` : state === "error" ? "Connection error" : "Not connected";
 }
 
