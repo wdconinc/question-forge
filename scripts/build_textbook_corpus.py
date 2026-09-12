@@ -216,6 +216,8 @@ def mathml_to_latex(elem):
             return _wrap_variant(elem, GREEK.get(text, OPS.get(text, _tex_escape(text))))
         if text in GREEK:
             return _wrap_variant(elem, GREEK[text])
+        if text.lower() in FUNCS:
+            return _wrap_variant(elem, "\\" + text.lower())
         return _wrap_variant(elem, r"\text{%s}" % _tex_escape(_map_greek_only(text)))
 
     if tag == "mspace":
@@ -252,10 +254,8 @@ def mathml_to_latex(elem):
         return "%s_{%s}^{%s}" % (_brace(base), sub(1), sub(2))
 
     if tag == "mfenced":
-        op = elem.get("open", "(")
-        cl = elem.get("close", ")")
         inner = " , ".join(mathml_to_latex(k) for k in kids)
-        return r"\left%s %s \right%s" % (op or ".", inner, cl or ".")
+        return r"\left%s %s \right%s" % (_delim(elem.get("open", "(")), inner, _delim(elem.get("close", ")")))
 
     if tag == "mtable":
         rows = [" & ".join(mathml_to_latex(c) for c in r if isinstance(c.tag, str)) for r in kids]
@@ -267,6 +267,13 @@ def mathml_to_latex(elem):
         return ""
 
     return joined()
+
+
+def _delim(ch):
+    """A \\left/\\right delimiter.  Braces must be escaped; "" means none."""
+    if not ch:
+        return "."
+    return {"{": r"\{", "}": r"\}", "|": r"|"}.get(ch, ch)
 
 
 def _brace(s):
@@ -295,6 +302,10 @@ def math_to_tex(elem, display=False):
     # *inside* the math ("F = ma \text{.}").  Drop it: the surrounding prose
     # already carries it, and it reads as noise to the model.
     body = re.sub(r"(?:\s*(?:\\text\{[.,;:]\}|[.,;:]))+$", "", body).strip()
+    # The books encode "0.13" as <mn>0</mn><mo>.</mo><mn>13</mn>, which comes out
+    # as "0 . 13" and reads as three tokens.  Rejoin decimals and thousands.
+    body = re.sub(r"(?<=\d) \. (?=\d)", ".", body)
+    body = re.sub(r"(?<=\d) , (?=\d\d\d\b)", ",", body)
     if not body:
         return ""
     return ("$$%s$$" % body) if display else ("$%s$" % body)
@@ -309,6 +320,32 @@ def _norm(s):
     # <link target-id="..."/> cross-references carry no text, so dropping them
     # leaves "as shown in ." behind.  Pull punctuation back onto the word.
     return re.sub(r"(\w)\s+([.,;:])", r"\1\2", out).strip()
+
+
+# Element ids -> a readable noun, rebuilt per module by extract_module().
+# CNXML cross-references are empty elements (<link target-id="fs-id123"/>), so
+# dropping them leaves "as shown in ." and "(see )." all through the worked
+# examples -- the highest-value text in the book.  Naming the target's element
+# type restores a readable sentence without resolving figure numbers.
+_LINK_LABELS = {
+    "figure": "the figure", "table": "the table", "example": "the example",
+    "equation": "the equation", "section": "the section", "note": "the note",
+    "exercise": "the exercise", "list": "the list",
+}
+_link_targets = {}
+
+
+def _index_link_targets(root):
+    targets = {}
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        eid = el.get("id")
+        if eid:
+            label = _LINK_LABELS.get(_local(el))
+            if label:
+                targets[eid] = label
+    return targets
 
 
 def inline_text(elem, skip_tags=()):
@@ -329,6 +366,8 @@ def inline_text(elem, skip_tags=()):
         name = _local(child)
         if child.tag == MML + "math":
             out.append(math_to_tex(child))
+        elif name == "link" and not (child.text or "").strip() and len(child) == 0:
+            out.append(_link_targets.get(child.get("target-id", ""), "the figure"))
         elif name in ("media", "image", "iframe"):
             pass
         elif name in skip_tags:
@@ -516,7 +555,9 @@ def _walk_sections(elem, rec, body_parts, level=2):
 
 def extract_module(path, module_id):
     """Parse one index.cnxml into a structured section record."""
+    global _link_targets
     root = ET.parse(path).getroot()
+    _link_targets = _index_link_targets(root)
     title_el = root.find(CNX + "title")
     content = root.find(CNX + "content")
     if content is None:

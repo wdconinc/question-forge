@@ -1,0 +1,248 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  createCorpus,
+  searchTextbook,
+  formatSectionsForPrompt,
+  buildCatalog,
+  MAX_CONTEXT_CHARS,
+} from "./textbook_search.js";
+
+// A two-book corpus held in memory.  No network, no files: createCorpus takes
+// fetchJson as an injected option precisely so this works, the same way
+// qti_export takes zipFactory.
+function makeFixture() {
+  const section = (id, sh, ch, t, tf) => ({
+    id, sh, ch, t, len: 100, tf, o: [], s: "", k: [],
+  });
+  const record = (number, chapter, title, extra = {}) => ({
+    number, chapter, chapterTitle: `Chapter ${chapter}`, title,
+    objectives: [`Understand ${title}.`],
+    summary: `A summary of ${title}.`,
+    body: `Body text for ${title}. `.repeat(20),
+    equations: [`$$E_{${number}} = mc^2$$`],
+    examples: [{ title: `Example for ${title}`, text: "Worked solution text." }],
+    problems: [{ n: 1, problem: `Problem about ${title}`, solution: "42 N" }],
+    conceptual: [{ n: 1, problem: `Why ${title}?`, solution: "" }],
+    glossary: [{ term: title.toLowerCase(), meaning: "a defined thing" }],
+    figures: [], terms: [title.toLowerCase()],
+    ...extra,
+  });
+
+  const files = {
+    "manifest.json": {
+      schemaVersion: 1,
+      books: [
+        {
+          slug: "book-a", title: "Book A", license: "CC BY-NC-SA 4.0",
+          attribution: "OpenStax, Book A. Access for free at example.org",
+          chapters: [{ n: 1, title: "Mechanics", sections: 3 }, { n: 2, title: "Waves", sections: 2 }],
+        },
+        {
+          slug: "book-b", title: "Book B", license: "CC BY-NC-SA 4.0",
+          attribution: "OpenStax, Book B. Access for free at example.org",
+          chapters: [{ n: 1, title: "Calculus", sections: 2 }],
+        },
+      ],
+    },
+    "book-a/index.json": {
+      slug: "book-a", docCount: 3, avgLen: 100,
+      df: { friction: 1, motion: 3, wave: 1 },
+      sections: [
+        section("1.1", "ch01", 1, "Motion", { motion: 30 }),
+        section("1.2", "ch01", 1, "Friction", { friction: 30, motion: 5 }),
+        section("2.1", "ch02", 2, "Waves", { wave: 30, motion: 5 }),
+      ],
+    },
+    "book-b/index.json": {
+      slug: "book-b", docCount: 2, avgLen: 100,
+      df: { derivative: 1, motion: 1 },
+      sections: [
+        section("1.1", "ch01", 1, "Derivatives", { derivative: 30 }),
+        section("1.2", "ch01", 1, "Integrals", { motion: 2 }),
+      ],
+    },
+    "book-a/ch01.json": {
+      slug: "book-a", attribution: "OpenStax, Book A. Access for free at example.org",
+      license: "CC BY-NC-SA 4.0",
+      sections: { "1.1": record("1.1", 1, "Motion"), "1.2": record("1.2", 1, "Friction") },
+    },
+    "book-a/ch02.json": {
+      slug: "book-a", attribution: "OpenStax, Book A. Access for free at example.org",
+      license: "CC BY-NC-SA 4.0",
+      sections: { "2.1": record("2.1", 2, "Waves") },
+    },
+    "book-b/ch01.json": {
+      slug: "book-b", attribution: "OpenStax, Book B. Access for free at example.org",
+      license: "CC BY-NC-SA 4.0",
+      sections: { "1.1": record("1.1", 1, "Derivatives"), "1.2": record("1.2", 1, "Integrals") },
+    },
+  };
+
+  const calls = [];
+  const fetchJson = async (url) => {
+    const path = url.replace(/^.*?corpus\//, "").replace(/\?.*$/, "");
+    calls.push(path);
+    if (!(path in files)) throw new Error(`404 ${path}`);
+    return JSON.parse(JSON.stringify(files[path]));
+  };
+  return { corpus: createCorpus({ fetchJson, baseUrl: "./corpus" }), calls, files };
+}
+
+const shardCalls = (calls) => calls.filter((p) => /ch\d+\.json$/.test(p));
+
+test("createCorpus requires an injected fetchJson", () => {
+  assert.throws(() => createCorpus({}), /fetchJson is required/);
+});
+
+test("an explicit section id fetches exactly one shard", async () => {
+  const { corpus, calls } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1"] }, { corpus });
+  assert.equal(r.hits.length, 1);
+  assert.equal(r.hits[0].title, "Motion");
+  assert.deepEqual(shardCalls(calls), ["book-a/ch01.json"]);
+});
+
+test("sections sharing a chapter are fetched in one request, not one each", async () => {
+  const { corpus, calls } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1", "book-a:1.2"] }, { corpus });
+  assert.equal(r.hits.length, 2);
+  assert.deepEqual(shardCalls(calls), ["book-a/ch01.json"]);
+});
+
+test("sections in different chapters and books fetch one shard each", async () => {
+  const { corpus, calls } = makeFixture();
+  await searchTextbook({ section_ids: ["book-a:1.1", "book-a:2.1", "book-b:1.1"] }, { corpus });
+  assert.deepEqual(shardCalls(calls).sort(),
+    ["book-a/ch01.json", "book-a/ch02.json", "book-b/ch01.json"]);
+});
+
+test("a repeated search re-uses the cache instead of refetching", async () => {
+  const { corpus, calls } = makeFixture();
+  await searchTextbook({ section_ids: ["book-a:1.1"] }, { corpus });
+  const after = calls.length;
+  await searchTextbook({ section_ids: ["book-a:1.2"] }, { corpus });
+  assert.equal(calls.length, after, "second search in the same chapter must fetch nothing");
+});
+
+test("an unqualified section id resolves against the enabled books", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["2.1"] }, { corpus });
+  assert.equal(r.hits[0].slug, "book-a");
+  assert.equal(r.hits[0].title, "Waves");
+});
+
+test("unknown section ids are reported, not silently dropped", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:9.9"] }, { corpus });
+  assert.equal(r.hits.length, 0);
+  assert.deepEqual(r.missing, ["book-a:9.9"]);
+});
+
+test("a query ranks across every enabled book", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "friction", max_sections: 1 }, { corpus });
+  assert.equal(r.hits.length, 1);
+  assert.equal(r.hits[0].title, "Friction");
+});
+
+test("the books filter restricts the search", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "derivative", books: ["book-a"] }, { corpus });
+  assert.equal(r.hits.length, 0, "book-b holds the only match and was not enabled");
+});
+
+test("the chapters filter restricts the search in both directions", async () => {
+  const { corpus } = makeFixture();
+  // "wave" lives only in chapter 2, so the filter is observable either way.
+  const inside = await searchTextbook({ query: "wave", books: ["book-a"], chapters: [2] }, { corpus });
+  assert.deepEqual(inside.hits.map((h) => h.number), ["2.1"]);
+  const outside = await searchTextbook({ query: "wave", books: ["book-a"], chapters: [1] }, { corpus });
+  assert.equal(outside.hits.length, 0);
+});
+
+test("a term common to every section scores below the floor", async () => {
+  // "motion" appears in all three book-a sections, so its IDF is near zero.
+  // This is the floor doing its job, not a bug: a term that discriminates
+  // nothing is not evidence that a section is relevant.
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "motion", books: ["book-a"] }, { corpus });
+  assert.equal(r.hits.length, 0);
+});
+
+test("a query no section covers returns no hits at all", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "photosynthesis chlorophyll" }, { corpus });
+  assert.equal(r.hits.length, 0);
+});
+
+test("max_sections is clamped to a sane range", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "motion", max_sections: 99 }, { corpus });
+  assert.ok(r.hits.length <= 6, "must not return more than the hard ceiling");
+});
+
+test("formatSectionsForPrompt emits a citable handle and one attribution per book", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1", "book-b:1.1"] }, { corpus });
+  const out = formatSectionsForPrompt(r);
+  assert.match(out, /\[book-a:1\.1\]/);
+  assert.match(out, /\[book-b:1\.1\]/);
+  assert.match(out, /Sources:.*Book A.*\|.*Book B/s);
+  assert.match(out, /CC BY-NC-SA 4\.0/);
+});
+
+test("include selects which parts of a section are rendered", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1"] }, { corpus });
+  const only = formatSectionsForPrompt(r, { include: ["problems"] });
+  assert.match(only, /End-of-section problems/);
+  assert.doesNotMatch(only, /Learning objectives/);
+  assert.doesNotMatch(only, /Worked example/);
+});
+
+test("include ignores unknown part names rather than rendering nothing", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1"] }, { corpus });
+  const out = formatSectionsForPrompt(r, { include: ["nonsense"] });
+  assert.match(out, /Learning objectives/, "falls back to the default parts");
+});
+
+test("formatSectionsForPrompt never exceeds maxChars", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1", "book-a:1.2", "book-a:2.1"] }, { corpus });
+  for (const budget of [400, 900, 2000]) {
+    const out = formatSectionsForPrompt(r, { include: ["summary", "body"], maxChars: budget });
+    assert.ok(out.length <= budget + 200,
+      `budget ${budget} produced ${out.length} chars`);
+  }
+});
+
+test("an empty result tells the model to say so rather than invent content", () => {
+  const out = formatSectionsForPrompt({ query: "phlogiston", hits: [], missing: [] });
+  assert.match(out, /No section/);
+  assert.match(out, /inventing textbook content/);
+  assert.match(out, /phlogiston/);
+});
+
+test("buildCatalog lists chapters with their section ranges", () => {
+  const { files } = makeFixture();
+  const out = buildCatalog(files["manifest.json"]);
+  assert.match(out, /\[book-a\] Book A/);
+  assert.match(out, /Ch 1\. Mechanics \(3 sections → 1\.0–1\.2\)/);
+  assert.match(out, /\[book-b\] Book B/);
+});
+
+test("buildCatalog narrows to pinned chapters and says so", () => {
+  const { files } = makeFixture();
+  const out = buildCatalog(files["manifest.json"], { books: ["book-a"], chapters: [2] });
+  assert.match(out, /Ch 2\. Waves/);
+  assert.doesNotMatch(out, /Ch 1\. Mechanics/);
+  assert.match(out, /pinned to chapters 2/);
+  assert.doesNotMatch(out, /Book B/);
+});
+
+test("the context ceiling is a real number other modules can rely on", () => {
+  assert.equal(typeof MAX_CONTEXT_CHARS, "number");
+  assert.ok(MAX_CONTEXT_CHARS > 0);
+});

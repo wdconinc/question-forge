@@ -23,6 +23,7 @@ jobs:
           cache: "npm"
       - run: npm ci
       - run: npm run lint
+      - run: npm test
 
   lint-server:
     name: Ruff (server)
@@ -33,4 +34,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check server/main.py
+      - run: ruff check server/main.py scripts/

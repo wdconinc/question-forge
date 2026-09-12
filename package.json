@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "lint": "eslint index.html src/**/*.js",
-    "lint:server": "ruff check server/main.py",
-    "lint:all": "eslint index.html src/**/*.js && ruff check server/main.py",
+    "lint:server": "ruff check server/main.py scripts/",
+    "lint:all": "eslint index.html src/**/*.js && ruff check server/main.py scripts/",
     "test": "node --test src/*.test.js"
   },
   "repository": {
