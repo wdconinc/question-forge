@@ -72,8 +72,8 @@ export function serialize(node) {
 // underscore) and disambiguates collisions against `usedIds`, if provided.
 export function sanitizeIdentifier(rawId, usedIds) {
   let id = String(rawId ?? "").replace(/[^A-Za-z0-9_.-]/g, "_");
-  if (!/^[A-Za-z_]/.test(id)) id = "q_" + id;
   if (!id) id = "q_item";
+  else if (!/^[A-Za-z_]/.test(id)) id = "q_" + id;
   if (usedIds) {
     const base = id;
     let n = 2;

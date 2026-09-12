@@ -2326,7 +2326,13 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
       document.removeEventListener("click", closeOnOutsideClick);
     }
   };
-  setTimeout(() => document.addEventListener("click", closeOnOutsideClick), 0);
+  // A paper button's own click handler can close the popover (by picking a
+  // paper) before this fires. Registering the listener anyway would leave it
+  // dangling on `document` with nothing left to ever remove it.
+  setTimeout(() => {
+    if (!pop.classList.contains("open")) return;
+    document.addEventListener("click", closeOnOutsideClick);
+  }, 0);
 }
 
 // qidFilter: null to export every enabled question, or an array of qids to
@@ -2340,7 +2346,13 @@ async function exportQtiForPaper(paper, qidFilter, filenameHint) {
     if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
-  const seed = state.settings[`seed${paper}`] ?? 42;
+  // Matches doRenderAll's exact fallback formula (state.settings.papers, indexed
+  // by position) so an export always reuses the same seed as the actually
+  // rendered paper — a fixed "?? 42" here would disagree with Render All for
+  // any paper other than whichever one happens to render first.
+  const papers = state.settings.papers || ["A"];
+  const paperIndex = Math.max(0, papers.indexOf(paper));
+  const seed = state.settings[`seed${paper}`] ?? (42 + paperIndex * 95);
 
   toast(`Materializing Paper ${paper} for QTI export…`, "");
   let data;

@@ -40,6 +40,16 @@ test("sanitizeIdentifier prefixes ids that start with a digit", () => {
   assert.equal(sanitizeIdentifier("1abc"), "q_1abc");
 });
 
+test("sanitizeIdentifier falls back to q_item for an empty, null, or undefined id", () => {
+  // Invalid characters are replaced with "_", not removed, so a non-empty
+  // input never sanitizes down to an empty string (e.g. "!!!" -> "___", which
+  // already starts with "_" and needs no further fallback) — only a raw id
+  // that is itself empty/nullish can hit this fallback.
+  assert.equal(sanitizeIdentifier(""), "q_item");
+  assert.equal(sanitizeIdentifier(null), "q_item");
+  assert.equal(sanitizeIdentifier(undefined), "q_item");
+});
+
 test("sanitizeIdentifier disambiguates collisions", () => {
   // "!" and "@" both collapse to "_", so these two distinct raw ids collide
   // on the sanitized string "q_1" and must be disambiguated.
