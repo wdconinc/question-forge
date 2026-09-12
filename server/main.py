@@ -24,11 +24,11 @@ sys.path = [
     or not any(seg.startswith("python3.") and seg != f"python{sys.version_info.major}.{sys.version_info.minor}" for seg in p.split("/"))
 ]
 
-import concurrent.futures
 import hmac
 import json
 import math
 import os
+import queue
 import threading
 import time
 import types
@@ -451,7 +451,10 @@ def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tupl
 # module in sys.modules (so `from questions import ...` resolves inside the
 # exec'd code) whose render_template is monkey-patched to the current
 # template. That's global, mutable state, so concurrent /chat requests must
-# not validate at the same time.
+# not validate at the same time. The previous entry (if any) is saved and
+# restored around the run rather than blindly popped, and the lock is never
+# held waiting on a hung worker thread (see _validate_question) so one
+# runaway AI-generated infinite loop can't wedge every future validation.
 _VALIDATION_LOCK = threading.Lock()
 
 
@@ -469,60 +472,88 @@ def _stub_phys_fmt(v: float, sig: int = 3) -> str:
     return f"{v:.{sig}g}"
 
 
+def _run_generate(template: str, python_code: str) -> tuple[bool, str]:
+    """Exec python_code, call generate(rng), and confirm it returns a
+    well-formed question dict. Assumes `questions` is already registered in
+    sys.modules by the caller. Runs on the caller's thread — the caller is
+    responsible for the timeout, since a genuine infinite loop in
+    AI-generated code cannot be interrupted from here."""
+    try:
+        namespace: dict = {}
+        exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
+        generate = namespace.get("generate")
+        if generate is None:
+            return False, "python_code must define a generate(rng) function"
+        result = generate(np.random.default_rng())
+
+        if not isinstance(result, dict):
+            return False, f"generate(rng) must return a dict, got {type(result).__name__}"
+        if not str(result.get("question", "")).strip():
+            return False, "generate(rng) must return a non-empty 'question'"
+        if not str(result.get("topic", "")).strip():
+            return False, "generate(rng) must return a non-empty 'topic'"
+        choices = result.get("choices")
+        if not (isinstance(choices, list) and len(choices) == 5):
+            return False, "generate(rng) must return exactly 5 'choices'"
+        if result.get("answer") not in ("a", "b", "c", "d", "e"):
+            return False, "generate(rng) must return an 'answer' of 'a'-'e'"
+        difficulty = result.get("difficulty")
+        if not (isinstance(difficulty, int) and not isinstance(difficulty, bool) and 1 <= difficulty <= 3):
+            return False, "generate(rng) must return a 'difficulty' int between 1 and 3"
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
-    """Execute python_code, call generate(rng), and confirm it returns a
-    well-formed question dict, using render_template (backed by `template`)
-    for any `from questions import ...` the code performs.
+    """Validate that python_code's generate(rng) renders `template` without
+    errors, using render_template (backed by `template`) for any
+    `from questions import ...` the code performs.
 
-    Runs in a thread pool with a 5-second timeout to guard against infinite
-    loops in AI-generated code.  Returns (ok, error_message).
+    Runs on a daemon thread with a 5-second timeout to guard against infinite
+    loops in AI-generated code. A timeout gives up waiting but the worker
+    thread itself is not killed (Python cannot forcibly stop a running
+    thread) — it is abandoned to finish or loop forever on its own. It must
+    be a daemon thread (not a concurrent.futures.ThreadPoolExecutor one,
+    which the stdlib joins at interpreter exit) so a leaked infinite loop
+    can't also hang server shutdown. The `questions` module patch is restored
+    immediately regardless of the timeout, since any `from questions import
+    ...` in the worker already bound its own reference at exec time and is
+    unaffected by later changes to sys.modules.  Returns (ok, error_message).
     """
-    def _run() -> tuple[bool, str]:
-        try:
-            jinja_env = JinjaEnv(
-                trim_blocks=True,
-                lstrip_blocks=True,
-                keep_trailing_newline=False,
-                undefined=StrictUndefined,
-            )
-            compiled_template = jinja_env.from_string(template)
+    jinja_env = JinjaEnv(
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=False,
+        undefined=StrictUndefined,
+    )
+    compiled_template = jinja_env.from_string(template)
+    questions_module = types.ModuleType("questions")
+    questions_module.render_template = (
+        lambda name, params: compiled_template.render(**params).strip()
+    )
+    questions_module.make_choices = _stub_make_choices
+    questions_module.phys_fmt = _stub_phys_fmt
 
-            questions_module = types.ModuleType("questions")
-            questions_module.render_template = (
-                lambda name, params: compiled_template.render(**params).strip()
-            )
-            questions_module.make_choices = _stub_make_choices
-            questions_module.phys_fmt = _stub_phys_fmt
-            sys.modules["questions"] = questions_module
-            try:
-                namespace: dict = {}
-                exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
-                generate = namespace.get("generate")
-                if generate is None:
-                    return False, "python_code must define a generate(rng) function"
-                result = generate(np.random.default_rng())
-            finally:
+    with _VALIDATION_LOCK:
+        previous_questions_module = sys.modules.get("questions")
+        sys.modules["questions"] = questions_module
+        result_box: queue.Queue = queue.Queue(maxsize=1)
+        worker = threading.Thread(
+            target=lambda: result_box.put(_run_generate(template, python_code)),
+            daemon=True,
+        )
+        try:
+            worker.start()
+            worker.join(timeout=5)
+            if worker.is_alive():
+                return False, "Execution timed out (>5 s)"
+            return result_box.get_nowait()
+        finally:
+            if previous_questions_module is None:
                 sys.modules.pop("questions", None)
-
-            if not isinstance(result, dict):
-                return False, f"generate(rng) must return a dict, got {type(result).__name__}"
-            if not str(result.get("question", "")).strip():
-                return False, "generate(rng) must return a non-empty 'question'"
-            choices = result.get("choices")
-            if not (isinstance(choices, list) and len(choices) == 5):
-                return False, "generate(rng) must return exactly 5 'choices'"
-            if result.get("answer") not in ("a", "b", "c", "d", "e"):
-                return False, "generate(rng) must return an 'answer' of 'a'-'e'"
-            return True, ""
-        except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
-
-    with _VALIDATION_LOCK, concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_run)
-        try:
-            return future.result(timeout=5)
-        except concurrent.futures.TimeoutError:
-            return False, "Execution timed out (>5 s)"
+            else:
+                sys.modules["questions"] = previous_questions_module
 
 
 async def _gemini_fix_call(
