@@ -2249,7 +2249,9 @@ async function doExportLogs() {
       userAgent: navigator.userAgent,
       language: navigator.language,
       viewport: `${window.innerWidth}x${window.innerHeight}`,
-      url: location.href,
+      // Path only — query string / fragment can carry sensitive data (e.g. an
+      // access token) that doesn't belong in an exported report.
+      url: location.origin + location.pathname,
       pyodideReady,
     },
     storageBytes,

@@ -57,7 +57,7 @@ export function buildDiagnosticsReport({
   lines.push(`Generated:      ${generatedAt}`);
   lines.push(`Session started: ${startedAt || "unknown"}`);
   for (const [key, value] of Object.entries(env)) {
-    lines.push(`${key}: ${value}`);
+    lines.push(`${key}: ${redact(value)}`);
   }
   lines.push(
     `localStorage state size: ${storageBytes === null ? "unavailable" : `${storageBytes} bytes`}`

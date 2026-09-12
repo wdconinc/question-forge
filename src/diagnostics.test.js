@@ -83,3 +83,10 @@ test("buildDiagnosticsReport pluralizes the entry count correctly", () => {
 test("buildDiagnosticsReport defaults startedAt to 'unknown' when not provided", () => {
   assert.match(buildDiagnosticsReport({}), /Session started: unknown/);
 });
+
+test("buildDiagnosticsReport redacts secrets in env values", () => {
+  const report = buildDiagnosticsReport({
+    env: { url: "https://example.com/app?access_token=abc123&other=1" },
+  });
+  assert.match(report, /url: https:\/\/example\.com\/app\?access_token=\[REDACTED\]&other=1/);
+});
