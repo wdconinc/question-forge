@@ -29,7 +29,7 @@ import hmac
 import json
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import anthropic
 import httpx
@@ -68,8 +68,14 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "claude-haiku-4-5":      {"provider": "anthropic", "label": "Claude Haiku 4.5"},
 }
 
+def _normalize_model(raw: str) -> str:
+    """Strip whitespace and an optional "provider/" prefix (LiteLLM style),
+    e.g. " gemini/gemini-2.5-flash " -> "gemini-2.5-flash"."""
+    return raw.strip().split("/")[-1]
+
+
 # Accept "gemini/gemini-2.5-flash" (LiteLLM style) or a bare model id.
-DEFAULT_MODEL: str = os.environ.get("LITELLM_MODEL", "gemini-2.5-flash").split("/")[-1]
+DEFAULT_MODEL: str = _normalize_model(os.environ.get("LITELLM_MODEL", "gemini-2.5-flash"))
 
 
 def _provider_for_model(model: str) -> str:
@@ -596,7 +602,7 @@ def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict]:
 
 
 async def _anthropic_fix_call(
-    client: "anthropic.AsyncAnthropic",
+    client: anthropic.AsyncAnthropic,
     model: str,
     system_text: str,
     messages: list[dict],
@@ -652,7 +658,7 @@ async def _anthropic_fix_call(
 
 async def _validate_and_fix_calls(
     function_calls: list[dict],
-    fix_call: "callable",
+    fix_call: Callable[[str, dict, str], Awaitable[dict | None]],
 ) -> AsyncIterator[dict]:
     """Validate update_question/create_question calls and try to auto-fix
     them via `fix_call(name, args, error) -> dict | None`. Mutates
@@ -681,12 +687,15 @@ async def _validate_and_fix_calls(
             if fixed_args is None:
                 print("[chat] fix call returned no function call", flush=True)
                 break
+            # Merge rather than replace — a model may return only the fields
+            # it changed, and dropping the rest would lose e.g. create_question's
+            # question_id/title on a partial fix response.
+            args = {**args, **fixed_args}
             ok, err = _validate_question(
-                fixed_args.get("template", template),
-                fixed_args.get("python_code", python_code),
+                args.get("template", template),
+                args.get("python_code", python_code),
             )
-            args = fixed_args
-            function_calls[i] = {**fc, "args": fixed_args}
+            function_calls[i] = {**fc, "args": args}
             if ok:
                 print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
                 break
@@ -883,7 +892,7 @@ async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]
 async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
     _check_token(request)
 
-    model = (req.model or DEFAULT_MODEL).strip()
+    model = _normalize_model(req.model) or DEFAULT_MODEL
     provider = _provider_for_model(model)
 
     if provider == "anthropic" and not ANTHROPIC_API_KEY:
