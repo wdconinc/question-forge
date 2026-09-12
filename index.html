@@ -2182,6 +2182,37 @@ async function doImportZip() {
   input.click();
 }
 
+// ── LaTeX → MathML conversion ────────────────────────────────────────────────
+// Converts a bare TeX string (no surrounding $ / \( \) delimiters) into a
+// standalone MathML XML string, using the MathJax instance already loaded for
+// on-screen preview. No extra component/config is needed: the tex-chtml.js
+// build already exposes tex2mmlPromise for this — MathJax already supported
+// it, it just wasn't being used anywhere. The existing typesetPromise()-based
+// on-screen rendering elsewhere in this file (renderPreview, showRenderOverlay)
+// is unaffected: this is an additional capability of the same MathJax
+// instance, not a replacement for it.
+async function latexToMathML(tex, { display = false } = {}) {
+  if (typeof tex !== "string") {
+    throw new Error(`latexToMathML expects a string, got ${typeof tex}`);
+  }
+  if (typeof MathJax === "undefined" || typeof MathJax.tex2mmlPromise !== "function") {
+    throw new Error("MathJax tex2mmlPromise is not available");
+  }
+  if (MathJax.startup?.promise) await MathJax.startup.promise;
+  const mml = await MathJax.tex2mmlPromise(tex, { display });
+  // MathJax resolves (does not throw) for most malformed TeX, embedding an
+  // in-band error marker instead — must be checked explicitly. Undefined/
+  // unrecognized macros specifically fall back to `<mtext mathcolor="red">`
+  // (verified empirically), which is distinct from how legitimate colored
+  // output renders (`\textcolor{red}{x}` / `\color{red}{x}` produce
+  // `<mstyle mathcolor="red">`, never `<mtext mathcolor="red">`) — so this
+  // check does not false-positive on intentionally red-colored math.
+  if (mml.includes("<merror") || mml.includes('<mtext mathcolor="red">')) {
+    throw new Error(`MathJax could not parse TeX snippet: ${tex}`);
+  }
+  return mml;
+}
+
 // ── Settings binding ───────────────────────────────────────────────────────
 function bindSettings() {
   [
