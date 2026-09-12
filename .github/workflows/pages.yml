@@ -27,6 +27,24 @@ jobs:
           cp index.html _site/
           cp -r src python templates _site/
           [ -d questions ] && cp -r questions _site/ || true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      # Builds the OpenStax textbook corpus the AI grounds questions in.
+      # Stdlib only, so there is nothing to pip install.  Not cached: the whole
+      # run takes ~30 s, and a cached clone would silently pin the books to
+      # whatever revision the cache was first populated with.
+      - name: Build textbook corpus
+        run: |
+          python scripts/build_textbook_corpus.py \
+            --book college-physics-2e \
+            --book university-physics-volume-1 \
+            --book university-physics-volume-2 \
+            --book university-physics-volume-3 \
+            --book calculus-volume-1 \
+            --book calculus-volume-2 \
+            --book calculus-volume-3 \
+            --output _site/corpus --report
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
