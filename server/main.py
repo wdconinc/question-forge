@@ -20,22 +20,23 @@ import sys
 # venv).  The venv's own site-packages always start with sys.prefix.
 sys.path = [
     p for p in sys.path
-    if not p or p.startswith(sys.prefix) or p.startswith(sys.base_prefix)
+    if not p or p.startswith((sys.prefix, sys.base_prefix))
     or not any(seg.startswith("python3.") and seg != f"python{sys.version_info.major}.{sys.version_info.minor}" for seg in p.split("/"))
 ]
 
+import concurrent.futures
 import hmac
 import json
 import os
 import time
-import concurrent.futures
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from jinja2 import Environment as JinjaEnv, StrictUndefined
+from jinja2 import Environment as JinjaEnv
+from jinja2 import StrictUndefined
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -566,38 +567,40 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 
     async def _stream() -> AsyncIterator[dict]:
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream("POST", url, params=params, json=body) as resp:
-                    print(f"[chat] gemini status={resp.status_code}", flush=True)
-                    if resp.status_code != 200:
-                        err = await resp.aread()
-                        err_text = err.decode()
-                        print(f"[chat] gemini error: {err_text[:500]}", flush=True)
-                        yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
-                        return
+            async with (
+                httpx.AsyncClient(timeout=120) as client,
+                client.stream("POST", url, params=params, json=body) as resp,
+            ):
+                print(f"[chat] gemini status={resp.status_code}", flush=True)
+                if resp.status_code != 200:
+                    err = await resp.aread()
+                    err_text = err.decode()
+                    print(f"[chat] gemini error: {err_text[:500]}", flush=True)
+                    yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
+                    return
 
-                    function_calls: list[dict] = []
-                    n_text = 0
+                function_calls: list[dict] = []
+                n_text = 0
 
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[5:].strip()
-                        if not raw or raw == "[DONE]":
-                            continue
-                        try:
-                            chunk = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
 
-                        for candidate in chunk.get("candidates", []):
-                            parts = candidate.get("content", {}).get("parts", [])
-                            for part in parts:
-                                if "text" in part and part["text"]:
-                                    n_text += 1
-                                    yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
-                                if "functionCall" in part:
-                                    function_calls.append(part["functionCall"])
+                    for candidate in chunk.get("candidates", []):
+                        parts = candidate.get("content", {}).get("parts", [])
+                        for part in parts:
+                            if part.get("text"):
+                                n_text += 1
+                                yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
+                            if "functionCall" in part:
+                                function_calls.append(part["functionCall"])
 
             print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
 
@@ -704,5 +707,5 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
