@@ -130,6 +130,7 @@ class ChatRequest(BaseModel):
     python_code: str = ""
     question_id: str = ""
     system_prompt: str = ""       # optional override for the base system prompt
+    question_type: str = "quiz"   # authoring style for this set: "quiz" or "homework"
     question_set_prompt: str = "" # optional per-exam context appended to system prompt
     bank_summary: str = ""        # optional summary of all questions in the bank
     preview_error: str = ""       # current error shown in the preview panel (if any)
@@ -326,6 +327,28 @@ When the user asks to create more than one question:
   because the template file is stored under that name on disk.
 """
 
+# Guidance appended for each selectable "question type" (see ChatRequest.question_type).
+# This supplements the base system prompt and the per-set question_set_prompt — it never
+# replaces either of them.
+QUESTION_TYPE_PROMPTS = {
+    "quiz": (
+        "Write this question in **quiz/test style**: concise and self-contained, "
+        "answerable within a couple of minutes, testing a single concept or "
+        "calculation. Prefer a direct numeric or conceptual question without "
+        "multi-part scaffolding."
+    ),
+    "homework": (
+        "Write this question in **homework/practice style**: it may involve a "
+        "multi-step derivation or several intermediate calculations, giving the "
+        "student room to practice applying a concept rather than testing quick "
+        "recall. The final answer must still be one of exactly 5 multiple-choice "
+        "options (the exam framework requires this), but the question text itself "
+        "can walk through a longer scenario, and distractors should reflect common "
+        "step-by-step mistakes (e.g. a sign error, a unit conversion slip, using the "
+        "wrong formula) rather than just nearby numeric values."
+    ),
+}
+
 def _system_prompt(req: ChatRequest) -> str:
     qid = req.question_id or "(unknown)"
     base = req.system_prompt.strip() if req.system_prompt.strip() else DEFAULT_SYSTEM_PROMPT
@@ -343,6 +366,13 @@ Current question ID: {qid}
         prompt += f"""
 === EXISTING QUESTIONS IN BANK ===
 {req.question_bank_summary.strip()}
+"""
+    question_type = (req.question_type or "").strip().lower() or "quiz"
+    type_guidance = QUESTION_TYPE_PROMPTS.get(question_type)
+    if type_guidance:
+        prompt += f"""
+=== QUESTION TYPE GUIDANCE ===
+{type_guidance}
 """
     if req.question_set_prompt.strip():
         prompt += f"""
