@@ -3178,6 +3178,76 @@ async function doTestStream() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Textbook corpus (OpenStax, built into ./corpus at deploy time)
+//
+// Retrieval runs entirely in the browser: nothing about the question bank is
+// sent anywhere to search the books.  Everything here degrades to "no textbook"
+// if ./corpus is missing, so a fork that never runs the build still works.
+// ---------------------------------------------------------------------------
+let _textbookCorpus = null;
+let _textbookManifest;   // undefined = not tried yet, null = unavailable
+
+async function _getTextbookCorpus() {
+  if (!_textbookCorpus) {
+    const { createCorpus } = await import("./src/textbook_search.js");
+    _textbookCorpus = createCorpus({
+      baseUrl: "./corpus",
+      fetchJson: async (url) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${res.status} fetching ${url}`);
+        return res.json();
+      },
+    });
+  }
+  return _textbookCorpus;
+}
+
+async function _getTextbookManifest() {
+  if (_textbookManifest !== undefined) return _textbookManifest;
+  try {
+    _textbookManifest = await (await _getTextbookCorpus()).manifest();
+  } catch (e) {
+    console.warn("[AI] textbook corpus unavailable — continuing without it:", e.message);
+    _textbookManifest = null;
+  }
+  return _textbookManifest;
+}
+
+function _activeSetTextbookScope() {
+  const set = state.questionSets.find(s => s.id === state.selectedSet);
+  return { books: set?.textbookBooks || [], chapters: set?.textbookChapters || [] };
+}
+
+// The always-on catalog is chapter-level on purpose: seven books come to ~740
+// sections, which would be ~18k tokens on every turn including the ones that
+// just fix a typo.  Chapters cost ~1.7k and still let the model name section
+// ids it can then request directly.
+async function _buildTextbookCatalog() {
+  const manifest = await _getTextbookManifest();
+  if (!manifest) return "";
+  const { buildCatalog } = await import("./src/textbook_search.js");
+  return buildCatalog(manifest, _activeSetTextbookScope());
+}
+
+async function _resolveTextbookSearch(req) {
+  const corpus = await _getTextbookCorpus();
+  const { searchTextbook, formatSectionsForPrompt } = await import("./src/textbook_search.js");
+  const scope = _activeSetTextbookScope();
+  const result = await searchTextbook({
+    query: req.query,
+    section_ids: req.section_ids,
+    include: req.include,
+    max_sections: req.max_sections,
+    // An explicit tool argument wins; otherwise the question set's own scope.
+    books: req.books?.length ? req.books : scope.books,
+    chapters: req.chapters?.length ? req.chapters : scope.chapters,
+  }, { corpus });
+  console.log("[AI] textbook search:", req.query || (req.section_ids || []).join(","),
+              "→", result.hits.map(h => `${h.slug}:${h.number}`).join(", ") || "(no match)");
+  return formatSectionsForPrompt(result, { include: req.include });
+}
+
 function _buildBankSummary() {
   if (!state || !state.questionSets || !state.questions) return "";
   const lines = [];
@@ -3233,10 +3303,16 @@ async function doSendChat() {
 
   let createCount = 0;
 
+  // Chapter-level table of contents of the books this question set is scoped to.
+  // Empty string when ./corpus was never built, which disables the feature
+  // rather than breaking the turn.
+  const textbookCatalog = await _buildTextbookCatalog();
+  let textbookQuery = "";
+
   // Inner function: performs one fetch+stream attempt with the given bankSummary
   // and optional requestedQuestion data.
   // Returns an object: { needsBank: bool, neededQuestionId: string|null }
-  const _doRequest = async (bankSummary, requestedQuestion = null) => {
+  const _doRequest = async (bankSummary, requestedQuestion = null, textbookContext = "") => {
     const _chatAbort = new AbortController();
     const _chatTimeout = setTimeout(() => _chatAbort.abort(new Error("Request timed out after 90s")), 90000);
     let res;
@@ -3266,6 +3342,9 @@ async function doSendChat() {
           requested_question_id: requestedQuestion?.question_id || "",
           requested_question_template: requestedQuestion?.template || "",
           requested_question_python_code: requestedQuestion?.python_code || "",
+          textbook_catalog: textbookCatalog,
+          textbook_context: textbookContext,
+          textbook_query: textbookQuery,
         }),
       });
     } finally {
@@ -3285,6 +3364,7 @@ async function doSendChat() {
     let streamDone = false;
     let needsBankSummary = false;
     let neededQuestionId = null;
+    let neededTextbook = null;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -3324,6 +3404,19 @@ async function doSendChat() {
             } else if (evt.tool === "get_question") {
               console.log("[AI] AI requested question:", evt.question_id, "— aborting stream and retrying with question data");
               neededQuestionId = evt.question_id || null;
+              reader.cancel();
+              streamDone = true;
+              break;
+            } else if (evt.tool === "search_textbook") {
+              console.log("[AI] AI requested textbook search — aborting stream and retrying with excerpts");
+              neededTextbook = {
+                query: evt.query || "",
+                section_ids: evt.section_ids || [],
+                books: evt.books || [],
+                chapters: evt.chapters || [],
+                include: evt.include || [],
+                max_sections: evt.max_sections || 3,
+              };
               reader.cancel();
               streamDone = true;
               break;
@@ -3382,7 +3475,7 @@ async function doSendChat() {
       }
     }
 
-    return { needsBank: needsBankSummary, neededQuestionId };
+    return { needsBank: needsBankSummary, neededQuestionId, neededTextbook };
   };
 
   let assistantText = "";
@@ -3391,14 +3484,22 @@ async function doSendChat() {
     // Retry loop: the AI may request the question bank or a specific question
     // before it has enough context to respond.  We honour both signals in any
     // order, up to MAX_TOOL_RETRIES total retries.
-    const MAX_TOOL_RETRIES = 3;
+    // Four, not three: there are now three distinct context signals the AI can
+    // raise (bank, single question, textbook), and each costs one retry.
+    const MAX_TOOL_RETRIES = 4;
     let activeBankSummary = "";
     let requestedQuestion = null;
+    // Unlike the bank and the single-question fields, textbook excerpts
+    // accumulate. The transport re-sends the whole conversation on each retry
+    // and the server then drops the tool, so a search that comes back thin
+    // would otherwise leave the model with no way to ask again.
+    let activeTextbookContext = "";
+    const servedTextbookKeys = new Set();
     let retries = 0;
 
-    let { needsBank, neededQuestionId } = await _doRequest("", null);
+    let { needsBank, neededQuestionId, neededTextbook } = await _doRequest("", null, "");
 
-    while ((needsBank || neededQuestionId) && retries < MAX_TOOL_RETRIES) {
+    while ((needsBank || neededQuestionId || neededTextbook) && retries < MAX_TOOL_RETRIES) {
       retries++;
 
       if (needsBank) {
@@ -3431,10 +3532,38 @@ async function doSendChat() {
         };
       }
 
-      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, requestedQuestion));
+      if (neededTextbook) {
+        const key = JSON.stringify(neededTextbook);
+        if (servedTextbookKeys.has(key)) {
+          console.warn("[AI] AI repeated the same textbook search — ignoring.");
+          break;
+        }
+        servedTextbookKeys.add(key);
+        const label = neededTextbook.query
+          || (neededTextbook.section_ids || []).join(", ")
+          || "the textbook";
+        aEl.innerHTML = `<span style="color:#aaa">Searching the textbook for <b>${escHtml(label)}</b>…</span>`;
+        assistantText = "";
+        try {
+          const excerpt = await _resolveTextbookSearch(neededTextbook);
+          const { MAX_CONTEXT_CHARS } = await import("./src/textbook_search.js");
+          if (activeTextbookContext.length + excerpt.length <= MAX_CONTEXT_CHARS) {
+            activeTextbookContext += excerpt;
+            textbookQuery = label;
+          } else {
+            console.warn("[AI] textbook context budget reached — ignoring further excerpts.");
+          }
+        } catch (e) {
+          console.warn("[AI] textbook search failed:", e.message);
+          activeTextbookContext += `=== TEXTBOOK EXCERPTS ===\nThe textbook could not be searched (${e.message}). Answer without it and say so.\n`;
+        }
+      }
+
+      ({ needsBank, neededQuestionId, neededTextbook } =
+        await _doRequest(activeBankSummary, requestedQuestion, activeTextbookContext));
     }
 
-    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId)) {
+    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId || neededTextbook)) {
       console.warn("[AI] reached max tool retries without completing the turn.");
     }
 
