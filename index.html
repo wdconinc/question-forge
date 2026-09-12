@@ -442,6 +442,57 @@
     }
   </style>
 
+  <!-- Diagnostic log capture — installed first, before any CDN script below,
+       so it can also catch load-time failures from those libraries. Entries
+       live in memory only (window.__qfDiagnostics) and are never sent
+       anywhere; src/diagnostics.js formats them into a file the user can
+       export on demand via the "Export Logs" toolbar button. -->
+  <script>
+    (function () {
+      const MAX_ENTRIES = 2000;
+      const entries = [];
+      const startedAt = new Date().toISOString();
+
+      // Best-effort secret scrubbing (e.g. the AI connection token) before a
+      // message ever enters the buffer — kept in sync with src/diagnostics.js.
+      function redact(str) {
+        return String(str)
+          .replace(/(Bearer\s+)\S+/gi, "$1[REDACTED]")
+          .replace(/("?(?:api[_-]?key|token|password|secret)"?\s*[:=]\s*"?)[^\s"',}&]+/gi, "$1[REDACTED]");
+      }
+
+      function stringifyArg(arg) {
+        if (typeof arg === "string") return arg;
+        if (arg instanceof Error) return arg.stack || `${arg.name}: ${arg.message}`;
+        try { return JSON.stringify(arg); } catch { return String(arg); }
+      }
+
+      function record(level, args) {
+        const message = redact(Array.from(args).map(stringifyArg).join(" "));
+        entries.push({ t: Date.now(), level, message });
+        if (entries.length > MAX_ENTRIES) entries.shift();
+      }
+
+      ["log", "info", "warn", "error", "debug"].forEach(level => {
+        const original = console[level] ? console[level].bind(console) : () => {};
+        console[level] = function (...args) {
+          record(level, args);
+          original(...args);
+        };
+      });
+
+      window.addEventListener("error", e => {
+        record("error", [`Uncaught ${e.message} (${e.filename}:${e.lineno}:${e.colno})`, e.error?.stack || ""]);
+      });
+      window.addEventListener("unhandledrejection", e => {
+        const reason = e.reason instanceof Error ? (e.reason.stack || e.reason.message) : String(e.reason);
+        record("error", ["Unhandled promise rejection:", reason]);
+      });
+
+      window.__qfDiagnostics = { entries, startedAt };
+    })();
+  </script>
+
   <!-- MathJax config must come before loading the script -->
   <script>
     window.MathJax = {
@@ -494,6 +545,7 @@
   <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
   <button class="btn btn-secondary" id="btn-export-qti" title="Export enabled questions as an IMS Common Cartridge question bank (for D2L Question Library import)">⬇ Export QTI</button>
   <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
+  <button class="btn btn-secondary" id="btn-export-logs" style="font-size:11px" title="Export a diagnostic log (console messages, errors, browser info) to help troubleshoot issues. Stays on your device until you save or share the file.">⬇ Export Logs</button>
   <button class="btn btn-secondary" id="btn-reset" style="margin-left:auto;font-size:11px;opacity:0.75" title="Reset to default question bank">↺ Reset</button>
   <div class="tb-sep"></div>
   <button class="btn btn-secondary" id="btn-toggle-chat" title="Toggle AI chat panel" style="font-size:12px">💬 AI Chat</button>
@@ -2230,6 +2282,39 @@ async function doExportZip() {
   toast("Project ZIP exported \u2713", "success");
 }
 
+// ── Export diagnostic logs ─────────────────────────────────────────────────
+async function doExportLogs() {
+  const { buildDiagnosticsReport } = await import("./src/diagnostics.js");
+  const diag = window.__qfDiagnostics || { entries: [], startedAt: null };
+
+  let storageBytes = null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    storageBytes = raw ? new Blob([raw]).size : 0;
+  } catch (e) { console.warn("Could not measure localStorage size:", e); }
+
+  const text = buildDiagnosticsReport({
+    entries: diag.entries,
+    startedAt: diag.startedAt,
+    generatedAt: new Date().toISOString(),
+    env: {
+      userAgent: navigator.userAgent,
+      language: navigator.language,
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      // Path only — query string / fragment can carry sensitive data (e.g. an
+      // access token) that doesn't belong in an exported report.
+      url: location.origin + location.pathname,
+      pyodideReady,
+    },
+    storageBytes,
+  });
+
+  const blob = new Blob([text], { type: "text/plain" });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  saveAs(blob, `questionforge_diagnostics_${stamp}.txt`);
+  toast("Diagnostic log exported ✓", "success");
+}
+
 // ── Import ZIP ─────────────────────────────────────────────────────────────
 async function doImportZip() {
   const input = document.createElement("input");
@@ -2683,6 +2768,7 @@ async function main() {
   on("btn-download-pdf",   doDownloadPDF);
   on("btn-export-zip", doExportZip);
   on("btn-export-qti", doExportQti);
+  on("btn-export-logs", doExportLogs);
   on("btn-import",     doImportZip);
   on("btn-import-sb",  doImportZip);
   on("btn-new-set",    doNewSet);

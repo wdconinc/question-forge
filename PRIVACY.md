@@ -19,6 +19,7 @@
   - SortableJS (cdn.jsdelivr.net) — drag-to-reorder UI
   These CDNs may log access requests (IP address, timestamp) per their own privacy policies. No question content is transmitted to them.
 - **Exports are local.** When you click "Export MD" or "Export ZIP", files are generated in your browser and downloaded directly to your device. No copy is retained anywhere else.
+- **Diagnostic logs stay on your device too.** QuestionForge keeps a rolling, in-memory log of console messages and errors to help troubleshoot issues. This log is never sent anywhere automatically; it is cleared when you close or reload the page. Clicking "Export Logs" writes it to a `.txt` file on your device, which you can choose to attach to a bug report. The app makes a best-effort attempt to redact obvious secrets (e.g. the AI connection token) from the log, but you should still review the file before sharing it, since it may include content you typed (question text, AI chat messages).
 - **Clearing your data.** To delete all stored data, clear `localStorage` for this site in your browser settings, or use the browser's developer tools to remove the `questionforge_state` key.
 
 ## Contact
