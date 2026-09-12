@@ -3287,7 +3287,14 @@ async function _getTextbookCorpus() {
 async function _getTextbookManifest() {
   if (_textbookManifest !== undefined) return _textbookManifest;
   try {
-    _textbookManifest = await (await _getTextbookCorpus()).manifest();
+    // doSendChat awaits this on every turn, so a stalled fetch would look like
+    // the AI hanging.  The manifest is a small file on the app's own origin:
+    // if it has not arrived in five seconds it is not going to.
+    _textbookManifest = await Promise.race([
+      (await _getTextbookCorpus()).manifest(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timed out after 5s")), 5000)),
+    ]);
   } catch (e) {
     console.warn("[AI] textbook corpus unavailable — continuing without it:", e.message);
     _textbookManifest = null;
