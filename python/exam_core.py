@@ -123,7 +123,9 @@ def render_paper(question_bank, question_order, meta, seed):
             ns = {}
             exec(compile(q["python_code"], qid + ".py", "exec"), ns)
             q_rng = np.random.default_rng(rng.integers(0, 2**63))
-            data_orig.append(ns["generate"](q_rng))
+            d = ns["generate"](q_rng)
+            d["qid"] = qid
+            data_orig.append(d)
         finally:
             _qmod.render_template = _orig_rt
 
@@ -137,4 +139,4 @@ def render_paper(question_bank, question_order, meta, seed):
         block, ans = render_question_block(i, d)
         lines.append(block)
         answers.append(ans)
-    return "\n".join(lines), answers
+    return "\n".join(lines), answers, data
