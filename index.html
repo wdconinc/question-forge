@@ -1357,8 +1357,10 @@ function loadState() {
         }];
         state.selectedSet = "set_default";
       }
+      const validQuestionTypes = new Set(QUESTION_TYPES.map(t => t.id));
       for (const s of state.questionSets) {
-        if (!s.questionType) s.questionType = DEFAULT_QUESTION_TYPE;
+        const normalized = (s.questionType || "").trim().toLowerCase();
+        s.questionType = validQuestionTypes.has(normalized) ? normalized : DEFAULT_QUESTION_TYPE;
       }
       return true;
     }

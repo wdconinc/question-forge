@@ -367,7 +367,8 @@ Current question ID: {qid}
 === EXISTING QUESTIONS IN BANK ===
 {req.question_bank_summary.strip()}
 """
-    type_guidance = QUESTION_TYPE_PROMPTS.get((req.question_type or "quiz").strip().lower())
+    question_type = (req.question_type or "").strip().lower() or "quiz"
+    type_guidance = QUESTION_TYPE_PROMPTS.get(question_type)
     if type_guidance:
         prompt += f"""
 === QUESTION TYPE GUIDANCE ===
