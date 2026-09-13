@@ -70,6 +70,40 @@ whichever provider key(s) the server has configured.
 > in `main.py` — see `_stream_gemini` / `_stream_anthropic` and the `MODEL_REGISTRY`
 > dict for the pattern to follow (e.g. for OpenAI or a local Ollama model).
 
+## Question validation
+
+Before a question the AI proposes reaches the browser, the server runs it the same way
+Pyodide will: it compiles the Jinja2 template from a string, patches
+`questions.render_template` to render it, execs the Python, and calls
+`generate(rng)` over a few fixed seeds. The returned dict must carry `question`,
+`choices` (exactly 5 distinct strings), `answer` (`a`-`e`), and optionally `topic` and
+`difficulty` (int 1-4) — the contract `python/exam_core.py` needs at Render All time.
+
+Failures are fed back to the model, which gets `MAX_FIX_ATTEMPTS` tries to repair the
+question. If the sandbox itself is broken (a missing dependency, a crashed child) the
+result is reported as *unavailable* and no repair calls are made — spending model quota
+on our own misconfiguration is exactly the bug this replaced.
+
+Two things worth knowing before changing any of it:
+
+- **`server/questions.py` is a byte-exact copy of `python/__init__.py`.** The Fly build
+  context is `server/`, so the Dockerfile cannot `COPY` from the repo root. CI runs
+  `cmp` on the pair; edit the canonical file and mirror it, or the deploy will ship
+  stale helpers. Note also that `deploy-server.yml` only triggers on `server/**`.
+- **This is a pre-filter, not an oracle.** The sandbox runs CPython while the app runs
+  Pyodide, which has no working `threading`, `socket` or `subprocess`. A pass here does
+  not guarantee a pass in the browser; the preview panel remains the authority.
+
+`server/qvalidate.py` runs as a separate process with a scrubbed environment (no
+`GOOGLE_API_KEY`, no `API_TOKEN`), CPU/memory/file-write limits, and a hard timeout, so
+model-authored Python cannot read the server's secrets and a runaway generator cannot
+take the machine down. Run the contract tests with:
+
+```bash
+pip install "numpy>=2.0,<2.2" "jinja2>=3.1"
+python server/test_qvalidate.py
+```
+
 ## API
 
 ### `GET /health`

@@ -8,7 +8,9 @@ Run from the question-forge/ repo root:
 
 Or specify a different source directory.
 """
-import json, pathlib, argparse
+import argparse
+import json
+import pathlib
 
 QUESTION_ORDER = [
     "q01_units", "q02_kinematics_1d", "q03_free_fall", "q04_vectors",

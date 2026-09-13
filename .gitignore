@@ -38,3 +38,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Textbook corpus: generated at deploy time by .github/workflows/pages.yml
+# (see README "Textbook corpus"). Never committed.
+/corpus/
+.cache/

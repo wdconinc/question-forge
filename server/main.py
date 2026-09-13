@@ -24,26 +24,24 @@ sys.path = [
     or not any(seg.startswith("python3.") and seg != f"python{sys.version_info.major}.{sys.version_info.minor}" for seg in p.split("/"))
 ]
 
+import asyncio
 import hmac
 import json
-import math
 import os
-import queue
-import threading
 import time
-import types
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anthropic
 import httpx
-import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from jinja2 import Environment as JinjaEnv
-from jinja2 import StrictUndefined
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+import qvalidate
 
 load_dotenv()
 
@@ -97,7 +95,15 @@ def _provider_api_key(provider: str) -> str:
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="QuestionForge AI Runner", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Fire and forget: cold starts are frequent (auto_stop_machines), so the canary
+    # must not add its subprocess latency to the first request.
+    asyncio.create_task(_validation_canary())
+    yield
+
+
+app = FastAPI(title="QuestionForge AI Runner", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -118,6 +124,7 @@ app.add_middleware(
 
 AUTH_HOLDOFF_SECS: float = float(os.environ.get("AUTH_HOLDOFF_SECS", "10"))
 MAX_FIX_ATTEMPTS: int   = int(os.environ.get("MAX_FIX_ATTEMPTS", "2"))
+VALIDATE_TIMEOUT: float = float(os.environ.get("VALIDATE_TIMEOUT", "10"))
 
 _last_auth_failure: float = 0.0   # monotonic timestamp of most recent failure
 
@@ -182,6 +189,9 @@ class ChatRequest(BaseModel):
     requested_question_id: str = ""       # ID of a non-active question the AI requested
     requested_question_template: str = "" # Jinja2 template of the requested question
     requested_question_python_code: str = "" # Python code of the requested question
+    textbook_catalog: str = ""    # chapter-level table of contents of the enabled textbooks
+    textbook_context: str = ""    # textbook excerpts the browser retrieved, client-resolved
+    textbook_query: str = ""      # the query/section ids those excerpts came from
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -253,11 +263,74 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_textbook",
+            "description": (
+                "Look up the course textbook and get back full section text: learning "
+                "objectives, the section summary, key equations, worked examples with "
+                "their solutions, and end-of-section problems with answers. "
+                "Call this BEFORE writing a new question so the question matches the "
+                "book's notation, level and problem style. "
+                "Pass `query` with precise terminology (e.g. 'coefficient of kinetic "
+                "friction inclined plane'), or `section_ids` when the catalog already "
+                "tells you which sections you need (e.g. ['6.3','6.4']). Prefer "
+                "`section_ids` when you know them. You get ONE textbook lookup per "
+                "reply, so ask for everything you need in a single call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text search over the textbook index.",
+                    },
+                    "section_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Section numbers from the catalog, e.g. ['6.3'] or "
+                            "['college-physics-2e:6.3']. Overrides `query`."
+                        ),
+                    },
+                    "books": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Restrict to these book slugs, as shown in the catalog.",
+                    },
+                    "chapters": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Restrict the search to these chapter numbers.",
+                    },
+                    "include": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["objectives", "summary", "equations", "examples",
+                                     "problems", "conceptual", "glossary", "body"],
+                        },
+                        "description": (
+                            "Which parts to return. Defaults to objectives, summary, "
+                            "equations, examples and problems. Add 'body' only when you "
+                            "need the full prose."
+                        ),
+                    },
+                    "max_sections": {
+                        "type": "integer",
+                        "description": "How many sections to return, 1-6. Default 3.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_question",
             "description": (
-                "Create a brand-new parametrized multiple-choice question and add it to the exam. "
-                "Use this when the user asks to create, add, or write a new question. "
-                "The question_id must be a short snake_case identifier, e.g. 'q_friction_ramp'."
+                "Create a brand-new parametrized multiple-choice or numerical-entry question "
+                "and add it to the exam. Use this when the user asks to create, add, or write "
+                "a new question. The question_id must be a short snake_case identifier, "
+                "e.g. 'q_friction_ramp'."
             ),
             "parameters": {
                 "type": "object",
@@ -295,13 +368,16 @@ TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question.
+multiple-choice or numerical-entry question.
 
 ## Python generator function
 
 The Python code must define a `generate(rng: numpy.random.Generator) -> dict` function.
-The function receives a seeded NumPy random generator and must return a dict with
-exactly these keys:
+The function receives a seeded NumPy random generator and must return a dict.
+There are two question types, chosen by the `type` key (default "multiple_choice"
+if omitted) — use whichever the current question already is:
+
+### Multiple choice
 
   question   : str        — full question text (plain text or Markdown / LaTeX)
   choices    : list[str]  — exactly 5 answer choice strings, e.g. ["1.23 m", ...]
@@ -309,15 +385,29 @@ exactly these keys:
                            using make_choices (correct value placed at index 0);
                            use 'b'–'e' only when building choices manually
   topic      : str        — brief topic label, e.g. "Ch. 4 — Newton's 2nd Law"
-  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+  difficulty : int        — difficulty level 1 (easy) to 4 (hardest)
 
 The exam framework automatically shuffles answer positions before printing, so
 there is no need to randomize the correct answer position yourself.
 
+### Numerical entry
+
+  type       : str        — must be "numerical"
+  question   : str        — full question text (plain text or Markdown / LaTeX)
+  answer     : float       — the correct numeric value
+  tolerance  : float       — absolute ± tolerance, resolved via resolve_tolerance()
+  unit       : str        — optional display unit, e.g. "m/s"
+  sig_figs   : int        — optional display precision (default 3)
+  topic      : str        — brief topic label
+  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+
+Numerical questions have no lettered choices and are graded as "within tolerance
+of answer", not by exact match.
+
 ## Helper functions (import from `questions`)
 
 ```python
-from questions import render_template, make_choices, phys_fmt
+from questions import render_template, make_choices, phys_fmt, resolve_tolerance
 ```
 
 - `render_template(question_id: str, params: dict) -> str`
@@ -328,12 +418,17 @@ from questions import render_template, make_choices, phys_fmt
 - `make_choices(correct_val: float, distractors: list[float], fmt: callable) -> list[str]`
   Builds a list of 5 unique, well-spaced choice strings. The correct answer is always
   at index 0 (answer = 'a'). `fmt` is a callable that converts a float to a display
-  string, e.g. `lambda v: f"{v:.2f} m"`.
+  string, e.g. `lambda v: f"{v:.2f} m"`. Multiple choice only.
 
 - `phys_fmt(v: float, sig: int = 3) -> str`
   Formats a number with `sig` significant figures for a printed exam. Automatically
   uses LaTeX scientific notation (e.g. `$1.23 \\times 10^{4}$`) for very large or
   very small values.
+
+- `resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float`
+  Numerical-entry only. Returns an absolute tolerance from either an absolute value
+  (`abs_tol`) or a fraction of `value` (`rel_tol`, e.g. 0.02 for ±2%). Exactly one
+  of the two must be given.
 
 ## Jinja2 template
 
@@ -341,6 +436,13 @@ The template renders the question text. Variables from the `params` dict are
 available as top-level template variables. Use `{{ variable }}` for substitution
 and `{% if %} / {% elif %} / {% else %} / {% endif %}` for conditionals.
 LaTeX math is written inline as `$...$`.
+
+## Runtime limits
+
+Questions run in the browser under Pyodide, which provides numpy, jinja2 and the
+Python standard library only. There is no networking (`socket`, `urllib`, `http`,
+`ssl`), no `subprocess` and no real threading, so a generator must rely on plain
+arithmetic, numpy and `math`.
 
 ## Workflow guidelines
 
@@ -423,6 +525,30 @@ Current question ID: {qid}
 === QUESTION SET CONTEXT ===
 {req.question_set_prompt.strip()}
 """
+    if req.textbook_catalog.strip():
+        # Deliberately NOT folded into DEFAULT_SYSTEM_PROMPT: that constant is
+        # duplicated verbatim in index.html and the two copies have already
+        # drifted, and the client sends "" when the user has not edited it, so
+        # whichever copy wins depends on whether they ever opened the textarea.
+        # A dynamic block sidesteps the trap entirely.
+        prompt += f"""
+{req.textbook_catalog.strip()}
+
+Grounding rules:
+- Call search_textbook BEFORE authoring a new question, and base the question on
+  what comes back. You get one textbook lookup per reply, so request everything
+  you need at once.
+- Use the book's own symbols, subscripts and unit conventions.
+- Match the difficulty and phrasing of that section's end-of-section problems.
+  Never reproduce a textbook problem verbatim: parametrize the numbers and write
+  the wording yourself.
+- Set the question's `topic` to the section number and title, e.g.
+  "6.3 - Centripetal Force".
+- In your chat reply, say which sections you used, e.g. "Grounded in 6.3, 6.4."
+  Cite ONLY sections whose text you were actually given. If the excerpts do not
+  cover what was asked, say so and search again with different terms rather than
+  inventing textbook content.
+"""
     if req.bank_summary.strip():
         prompt += f"""
 === ALL QUESTIONS IN BANK ===
@@ -445,6 +571,10 @@ Please fix the template and/or python_code so the preview runs without errors.
 
 --- PYTHON GENERATOR ---
 {req.requested_question_python_code or "(empty)"}
+"""
+    if req.textbook_context.strip():
+        prompt += f"""
+{req.textbook_context.strip()}
 """
     return prompt
 
@@ -530,122 +660,139 @@ def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tupl
 # CPython + numpy and lightweight stand-ins for the questions/ helpers.
 # ---------------------------------------------------------------------------
 
-# Serializes validation runs: each one temporarily registers a "questions"
-# module in sys.modules (so `from questions import ...` resolves inside the
-# exec'd code) whose render_template is monkey-patched to the current
-# template. That's global, mutable state, so concurrent /chat requests must
-# not validate at the same time. The previous entry (if any) is saved and
-# restored around the run rather than blindly popped, and the lock is never
-# held waiting on a hung worker thread (see _validate_question) so one
-# runaway AI-generated infinite loop can't wedge every future validation.
-_VALIDATION_LOCK = threading.Lock()
+_QVALIDATE = str(Path(__file__).resolve().parent / "qvalidate.py")
+
+# One numpy child at a time: a 256 MB machine cannot host several, and validation is
+# never on the latency-critical path (the Gemini stream has already finished).
+_VALIDATE_SEM = asyncio.Semaphore(1)
+
+# Defined in qvalidate so the worker, main.py and the tests cannot drift apart. Importing
+# it is cheap: qvalidate defers numpy and jinja2 until validate() is actually called.
+_SANDBOX_ENV = qvalidate.SANDBOX_ENV
 
 
-def _stub_make_choices(correct_val: float, distractors: list, fmt, min_spacing: float = 0.12) -> list[str]:
-    """Simplified stand-in for questions.make_choices() — just enough to run
-    AI-generated code without crashing. Doesn't enforce uniqueness/spacing;
-    that real logic lives in the browser's questions/__init__.py."""
-    values = ([correct_val, *list(distractors)] + [correct_val] * 4)[:5]
-    return [fmt(v) for v in values]
+async def _validate_question(
+    template: str,
+    python_code: str,
+    expected_name: str | None = None,
+) -> tuple[str, str]:
+    """Run the question in a sandboxed subprocess; return (state, message).
 
+    state is one of:
+      "ok"          — the question satisfies the exam contract
+      "invalid"     — the question is broken; worth asking the model to fix it
+      "unavailable" — this sandbox is broken (missing dependency, crashed child).
+                      Never spend model calls "fixing" a question over this.
 
-def _stub_phys_fmt(v: float, sig: int = 3) -> str:
-    if not math.isfinite(v) or v == 0:
-        return "0"
-    return f"{v:.{sig}g}"
-
-
-def _run_generate(template: str, python_code: str) -> tuple[bool, str]:
-    """Exec python_code, call generate(rng), and confirm it returns a
-    well-formed question dict. Assumes `questions` is already registered in
-    sys.modules by the caller. Runs on the caller's thread — the caller is
-    responsible for the timeout, since a genuine infinite loop in
-    AI-generated code cannot be interrupted from here."""
-    try:
-        namespace: dict = {}
-        exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
-        generate = namespace.get("generate")
-        if generate is None:
-            return False, "python_code must define a generate(rng) function"
-        result = generate(np.random.default_rng())
-
-        if not isinstance(result, dict):
-            return False, f"generate(rng) must return a dict, got {type(result).__name__}"
-        if not str(result.get("question", "")).strip():
-            return False, "generate(rng) must return a non-empty 'question'"
-        if not str(result.get("topic", "")).strip():
-            return False, "generate(rng) must return a non-empty 'topic'"
-        choices = result.get("choices")
-        if not (isinstance(choices, list) and len(choices) == 5):
-            return False, "generate(rng) must return exactly 5 'choices'"
-        if result.get("answer") not in ("a", "b", "c", "d", "e"):
-            return False, "generate(rng) must return an 'answer' of 'a'-'e'"
-        difficulty = result.get("difficulty")
-        if not (isinstance(difficulty, int) and not isinstance(difficulty, bool) and 1 <= difficulty <= 3):
-            return False, "generate(rng) must return a 'difficulty' int between 1 and 3"
-        return True, ""
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-
-
-def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
-    """Validate that python_code's generate(rng) renders `template` without
-    errors, using render_template (backed by `template`) for any
-    `from questions import ...` the code performs.
-
-    Runs on a daemon thread with a 5-second timeout to guard against infinite
-    loops in AI-generated code. A timeout gives up waiting but the worker
-    thread itself is not killed (Python cannot forcibly stop a running
-    thread) — it is abandoned to finish or loop forever on its own. It must
-    be a daemon thread (not a concurrent.futures.ThreadPoolExecutor one,
-    which the stdlib joins at interpreter exit) so a leaked infinite loop
-    can't also hang server shutdown. The `questions` module patch is restored
-    immediately regardless of the timeout, since any `from questions import
-    ...` in the worker already bound its own reference at exec time and is
-    unaffected by later changes to sys.modules.  Returns (ok, error_message).
+    The work happens in server/qvalidate.py, which mirrors the browser's Pyodide
+    preview (index.html:1893-1916).  It runs out-of-process for three reasons: the
+    parent never imports numpy, a runaway can actually be SIGKILLed, and the child
+    cannot reach GOOGLE_API_KEY / API_TOKEN.  Note this is a pre-filter, not an
+    oracle — the browser preview remains the authority on whether a question runs.
     """
-    jinja_env = JinjaEnv(
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=False,
-        undefined=StrictUndefined,
-    )
-    compiled_template = jinja_env.from_string(template)
-    questions_module = types.ModuleType("questions")
-    questions_module.render_template = (
-        lambda name, params: compiled_template.render(**params).strip()
-    )
-    questions_module.make_choices = _stub_make_choices
-    questions_module.phys_fmt = _stub_phys_fmt
+    job = json.dumps({
+        "template": template,
+        "python_code": python_code,
+        "expected_name": expected_name or "",
+    }).encode()
 
-    with _VALIDATION_LOCK:
-        previous_questions_module = sys.modules.get("questions")
-        sys.modules["questions"] = questions_module
-        result_box: queue.Queue = queue.Queue(maxsize=1)
-        worker = threading.Thread(
-            target=lambda: result_box.put(_run_generate(template, python_code)),
-            daemon=True,
-        )
+    async with _VALIDATE_SEM:
         try:
-            worker.start()
-            worker.join(timeout=5)
-            if worker.is_alive():
-                return False, "Execution timed out (>5 s)"
-            return result_box.get_nowait()
-        finally:
-            if previous_questions_module is None:
-                sys.modules.pop("questions", None)
-            else:
-                sys.modules["questions"] = previous_questions_module
+            proc = await asyncio.create_subprocess_exec(
+                # -I isolates from PYTHONPATH and user site-packages; -B stops bytecode
+                # writes, which the child's RLIMIT_FSIZE=0 would otherwise block.
+                sys.executable, "-I", "-B", _QVALIDATE,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_SANDBOX_ENV,
+            )
+        except OSError as exc:
+            return "unavailable", f"could not start the validation sandbox: {exc}"
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(job), timeout=VALIDATE_TIMEOUT
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return "invalid", (
+                f"the question did not finish running within {VALIDATE_TIMEOUT:.0f} s — "
+                "generate(rng) is probably stuck in an infinite loop"
+            )
+
+    try:
+        result = json.loads(stdout.decode())
+        state = result["state"]
+        message = result.get("message", "")
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError):
+        detail = stderr.decode(errors="replace").strip().splitlines()
+        tail = detail[-1] if detail else "no output"
+        if proc.returncode is not None and proc.returncode < 0:
+            # Killed by a signal — RLIMIT_CPU (SIGXCPU) or our own kill. The question
+            # exhausted its budget, so it is worth asking the model to fix it.
+            return "invalid", (
+                "the question exceeded the sandbox CPU or memory budget — generate(rng) "
+                f"is probably stuck in a loop or allocating without bound ({tail})"
+            )
+        return "unavailable", (
+            f"validation sandbox exited with code {proc.returncode}: {tail}"
+        )
+
+    if state not in ("ok", "invalid", "unavailable"):
+        return "unavailable", f"validation sandbox returned an unknown state {state!r}"
+    return state, message
+
+
+async def _validation_canary() -> None:
+    """Prove the sandbox works at boot, so a broken deploy is one line in `fly logs`.
+
+    Without this, a forgotten COPY in the Dockerfile silently turns every question
+    into a validation failure and burns two Gemini calls apiece — exactly the bug
+    this validator was rewritten to fix.
+    """
+    state, message = await _validate_question(
+        template="{{ n }} apples.",
+        python_code=(
+            "import numpy as np\n"
+            "from questions import render_template\n"
+            "def generate(rng: np.random.Generator) -> dict:\n"
+            "    n = int(rng.integers(2, 9))\n"
+            "    return {\n"
+            '        "question": render_template("canary", {"n": n}),\n'
+            '        "choices": ["a", "b", "c", "d", "e"],\n'
+            '        "answer": "a",\n'
+            '        "topic": "canary",\n'
+            '        "difficulty": 1,\n'
+            "    }\n"
+        ),
+        expected_name="canary",
+    )
+    if state == "ok":
+        print("[validate] environment OK", flush=True)
+    else:
+        print(
+            f"[validate] SANDBOX BROKEN ({state}): {message} — "
+            "AI-authored questions will not be validated",
+            flush=True,
+        )
 
 
 _FIX_REQUIREMENTS_TEXT = (
     "Requirements:\n"
-    "  • python_code must define a generate(rng: numpy.random.Generator) -> dict function\n"
-    "  • It must return a dict with 'question', 'choices' (exactly 5), 'answer' ('a'-'e'),\n"
-    "    'topic', and 'difficulty'\n"
-    "  • If it calls render_template(question_id, params), every Jinja2 variable in the\n"
-    "    template must be a key in params, and the template must render without exceptions"
+    "  • python_code must define generate(rng: numpy.random.Generator) -> dict\n"
+    "  • It must return question (str), choices (a list of exactly 5 distinct "
+    "strings), answer (one of 'a'-'e'), topic (str) and difficulty (int 1-4)\n"
+    "  • Build the question text with render_template(question_id, params), "
+    "passing this question's own id\n"
+    "  • Every Jinja2 variable used in the template must be a key in that params "
+    "dict, and the template must render for any rng seed\n"
+    "  • Only numpy, jinja2 and the Python standard library are available, "
+    "and the question runs in the browser under Pyodide: no networking "
+    "(socket, urllib, http, ssl), no subprocess and no threading\n"
+    "  • Use plain arithmetic, numpy and the math module — a question "
+    "generator never needs to reach outside the process"
 )
 
 
@@ -782,6 +929,7 @@ async def _anthropic_fix_call(
 
 async def _validate_and_fix_calls(
     function_calls: list[dict],
+    req: ChatRequest,
     fix_call: Callable[[str, dict, str], Awaitable[dict | None]],
 ) -> AsyncIterator[dict]:
     """Validate update_question/create_question calls and try to auto-fix
@@ -794,14 +942,27 @@ async def _validate_and_fix_calls(
         args = fc.get("args", {})
         if name not in ("update_question", "create_question"):
             continue
-        template = args.get("template", "")
-        python_code = args.get("python_code", "")
+        # An update_question only has to carry the field it changes; the browser
+        # applies it on top of the editor's current content, so validate that same
+        # pair.  Single-field updates are the common case and used to skip
+        # validation entirely.  A create_question has no editor content to fall
+        # back on — borrowing the open question's template would validate a pair
+        # that never exists — so it must supply both itself.
+        fallback_template = req.template if name == "update_question" else ""
+        fallback_python = req.python_code if name == "update_question" else ""
+        template = args.get("template") or fallback_template
+        python_code = args.get("python_code") or fallback_python
         if not (template and python_code):
             continue
+        expected_name = args.get("question_id") or req.question_id or None
 
-        ok, err = _validate_question(template, python_code)
-        if ok:
+        state, err = await _validate_question(template, python_code, expected_name)
+        if state == "ok":
             print(f"[chat] validation ok for {name}", flush=True)
+            continue
+        if state == "unavailable":
+            # Our problem, not the model's — never burn fix calls on it.
+            print(f"[chat] validation unavailable for {name}: {err}", flush=True)
             continue
 
         print(f"[chat] validation failed for {name}: {err[:200]}", flush=True)
@@ -811,21 +972,26 @@ async def _validate_and_fix_calls(
             if fixed_args is None:
                 print("[chat] fix call returned no function call", flush=True)
                 break
-            # Merge rather than replace — a model may return only the fields
-            # it changed, and dropping the rest would lose e.g. create_question's
-            # question_id/title on a partial fix response.
+            # Merge, don't replace: a fix that returns only python_code must not
+            # drop question_id/title, nor a template repaired on an earlier attempt.
             args = {**args, **fixed_args}
-            ok, err = _validate_question(
-                args.get("template", template),
-                args.get("python_code", python_code),
-            )
-            function_calls[i] = {**fc, "args": args}
-            if ok:
+            template = args.get("template") or fallback_template
+            python_code = args.get("python_code") or fallback_python
+            state, err = await _validate_question(template, python_code, expected_name)
+            if state == "ok":
+                # Only now is the rewrite worth showing the user.
+                function_calls[i] = {**fc, "args": args}
                 print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
+                break
+            if state == "unavailable":
+                print(f"[chat] validation unavailable mid-fix: {err}", flush=True)
                 break
             print(f"[chat] fix attempt {fix_attempt + 1} still failing: {err[:200]}", flush=True)
 
-        if not ok:
+        if state != "ok":
+            # Emit the model's ORIGINAL tool call untouched — a failed repair is
+            # usually worse than what it started from.
+            print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
             yield {"data": json.dumps({
                 "type": "text",
                 "delta": (
@@ -857,6 +1023,22 @@ async def _emit_tool_calls(function_calls: list[dict], req: ChatRequest) -> Asyn
             print(f"[chat] AI requested get_question: {requested_id}", flush=True)
             yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
             continue
+        if name == "search_textbook":
+            if req.textbook_context.strip():
+                print("[chat] suppressing search_textbook — textbook_context already provided", flush=True)
+                continue
+            print(f"[chat] AI requested search_textbook: {str(args.get('query', ''))[:80]}", flush=True)
+            yield {"data": json.dumps({
+                "type": "tool_call",
+                "tool": "search_textbook",
+                "query": args.get("query", ""),
+                "section_ids": args.get("section_ids", []),
+                "books": args.get("books", []),
+                "chapters": args.get("chapters", []),
+                "include": args.get("include", []),
+                "max_sections": args.get("max_sections", 3),
+            })}
+            continue
         payload: dict = {"type": "tool_call", "tool": name}
         if "template" in args:
             payload["template"] = args["template"]
@@ -882,6 +1064,13 @@ def _excluded_tools(req: ChatRequest) -> set[str]:
         excluded.add("get_question_bank")
     if req.requested_question_id.strip():
         excluded.add("get_question")
+    if req.textbook_context.strip():
+        excluded.add("search_textbook")
+    elif not req.textbook_catalog.strip():
+        # No catalog means no corpus was built, or the question set has every
+        # book unchecked.  Offering the tool would invite a call the client
+        # cannot answer.
+        excluded.add("search_textbook")
     return excluded
 
 
@@ -952,7 +1141,7 @@ async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
         async def _fix(name: str, args: dict, error: str) -> dict | None:
             return await _gemini_fix_call(model, system_text, contents, name, args, error)
 
-        async for ev in _validate_and_fix_calls(function_calls, _fix):
+        async for ev in _validate_and_fix_calls(function_calls, req, _fix):
             yield ev
         async for ev in _emit_tool_calls(function_calls, req):
             yield ev
@@ -1001,7 +1190,7 @@ async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]
     async def _fix(name: str, args: dict, error: str) -> dict | None:
         return await _anthropic_fix_call(client, model, system_text, messages, name, args, error)
 
-    async for ev in _validate_and_fix_calls(function_calls, _fix):
+    async for ev in _validate_and_fix_calls(function_calls, req, _fix):
         yield ev
     async for ev in _emit_tool_calls(function_calls, req):
         yield ev

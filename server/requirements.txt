@@ -3,6 +3,9 @@ uvicorn[standard]>=0.29
 sse-starlette>=2.1
 httpx>=0.27
 jinja2>=3.1
-numpy>=1.26
+# Validation sandbox (qvalidate.py). Matches Pyodide 0.27.0, which ships numpy 2.0.2;
+# 2.0.2 has no cp313 wheel, so pin the range rather than the exact version.
+# Bump together with PYODIDE_INDEX in index.html.
+numpy>=2.0,<2.2
 python-dotenv>=1.0
 anthropic>=1.0

@@ -52,6 +52,15 @@ def apply_answer_positions(data_list, positions, rng):
 
 
 def render_question_block(q_num, data):
+    if data.get("type", "multiple_choice") == "numerical":
+        from questions import phys_fmt
+        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        unit_suffix = f" {data['unit']}" if data.get("unit") else ""
+        ans_str = (
+            f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
+            f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
+        )
+        return "\n".join(lines), ans_str
     lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
@@ -131,8 +140,10 @@ def render_paper(question_bank, question_order, meta, seed):
 
     order = local_shuffle_order(len(question_order), rng)
     data = [data_orig[i] for i in order]
-    pos_rng = np.random.default_rng([seed, 0xF1A1A])
-    apply_answer_positions(data, assign_answer_positions(len(data), pos_rng), pos_rng)
+    mc_data = [d for d in data if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data:
+        pos_rng = np.random.default_rng([seed, 0xF1A1A])
+        apply_answer_positions(mc_data, assign_answer_positions(len(mc_data), pos_rng), pos_rng)
     lines = [build_header(meta)]
     answers = []
     for i, d in enumerate(data, 1):

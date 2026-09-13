@@ -102,6 +102,7 @@
     .q-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .q-stars { color: #f0ab00; font-size: 10px; flex-shrink: 0; }
     .sidebar-item.selected .q-stars { color: #ffe080; }
+    .q-type-badge { font-size: 10px; flex-shrink: 0; }
     .q-delete {
       background: none; border: none; cursor: pointer; font-size: 13px;
       padding: 0 1px; opacity: 0.4; transition: opacity 0.1s; flex-shrink: 0; line-height: 1;
@@ -609,6 +610,23 @@
       </label>
     </div>
   </div>
+
+  <div class="ai-prompt-section">
+    <div class="ai-prompt-section-hdr" id="hdr-textbook">
+      <span id="arr-textbook">▶</span> Textbook Grounding
+    </div>
+    <div class="ai-prompt-section-body collapsed" id="body-textbook">
+      <div style="font-weight:400;color:#555;font-size:11px;margin-bottom:4px">
+        Books the AI may search when writing questions for the selected set:
+      </div>
+      <div id="ai-textbook-books" style="max-height:120px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:4px 6px;background:#fafafa"></div>
+      <label style="font-weight:400;color:#555;font-size:11px;margin-top:8px">
+        <span>Limit to chapters (optional), e.g. 4-6, 9</span>
+        <input type="text" id="ai-textbook-chapters" placeholder="all chapters">
+      </label>
+      <div id="ai-textbook-credit" style="font-size:10px;color:#888;margin-top:6px;line-height:1.45"></div>
+    </div>
+  </div>
 </div>
 
 <!-- QTI export paper-choice popover (populated dynamically) -->
@@ -661,6 +679,11 @@
         <div class="ep" id="ep-python" style="flex:1;min-height:110px">
           <div class="ep-hdr">
             <span>🐍 Python Generator</span>
+            <select id="ep-type-select" title="Question type"
+              style="font-size:10.5px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background:#fff;color:#333">
+              <option value="multiple_choice">Multiple Choice</option>
+              <option value="numerical">Numerical Entry</option>
+            </select>
           </div>
           <div class="ep-body" id="wrap-python"></div>
         </div>
@@ -788,9 +811,13 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
     min_spacing : minimum required relative difference |a-b|/max(|a|,|b|)
                   between any two choice values (default 12 %).
 
-    Returns list of 5 unique strings; correct is always at index 0.
+    Returns exactly 5 unique strings; correct is always at index 0.
     If a distractor is too close to the correct value or any already-placed
-    choice, it is replaced by correct_val * fallback_multiplier.
+    choice, it is replaced by a fallback: first correct_val * multiplier, then —
+    once those are exhausted or unusable (notably correct_val == 0, where every
+    multiple is 0 again) — correct_val ± k * step, with step taken from the
+    spread of the supplied distractors. Raises ValueError if even that cannot
+    produce 5 distinct choices.
     """
     def _too_close(v, existing_vals):
         """Return True if v is within min_spacing of any value in existing_vals."""
@@ -816,38 +843,89 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
                  2.3, 2.7, 3.5, 4.5, 11.0, 12.0, 0.3, 0.15, 0.08]
     fb_idx = 0
 
+    def _place(v):
+        """Append fmt(v) to result if it is new and far enough from the rest."""
+        s = fmt(v)
+        if s in used_strs or _too_close(v, used_vals):
+            return False
+        used_strs.add(s)
+        used_vals.append(v)
+        result.append(s)
+        return True
+
+    def _additive_candidates():
+        """Yield correct_val ± k * step — the fallback of last resort, for when
+        scaling correct_val cannot produce anything new."""
+        spread = [abs(d - correct_val) for d in distractors
+                  if math.isfinite(d) and d != correct_val]
+        step = min(spread) if spread else abs(correct_val)
+        # Keep step wide enough that correct_val ± step already clears min_spacing.
+        step = max(step, abs(correct_val) * min_spacing / max(1.0 - min_spacing, 0.1))
+        if not math.isfinite(step) or step <= 0.0:
+            step = 1.0
+        ks = (1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 26, 33, 42, 54, 70)
+        for sign in (1.0, -1.0):    # positive offsets first: they stay physical
+            for k in ks:            # for quantities that cannot go negative
+                yield correct_val + sign * k * step
+
+    additive = _additive_candidates()
+
+    def _place_fallback():
+        """Fill one slot with a synthetic value; False if nothing worked."""
+        nonlocal fb_idx
+        while fb_idx < len(fallbacks):
+            candidate = correct_val * fallbacks[fb_idx]
+            fb_idx += 1
+            if candidate == 0:
+                continue
+            if _place(candidate):
+                return True
+        for mult in [1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8]:
+            if _place(correct_val * mult):
+                return True
+        for candidate in additive:
+            if _place(candidate):
+                return True
+        return False
+
     for d in distractors:
-        s = fmt(d)
-        if s not in used_strs and not _too_close(d, used_vals):
-            used_strs.add(s)
-            used_vals.append(d)
-            result.append(s)
-        else:
-            placed = False
-            while fb_idx < len(fallbacks):
-                candidate = correct_val * fallbacks[fb_idx]
-                fb_idx += 1
-                if candidate == 0:
-                    continue
-                cs = fmt(candidate)
-                if cs not in used_strs and not _too_close(candidate, used_vals):
-                    used_strs.add(cs)
-                    used_vals.append(candidate)
-                    result.append(cs)
-                    placed = True
-                    break
-            if not placed:
-                for mult in [1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8]:
-                    cs = fmt(correct_val * mult)
-                    candidate = correct_val * mult
-                    if cs not in used_strs and not _too_close(candidate, used_vals):
-                        used_strs.add(cs)
-                        used_vals.append(candidate)
-                        result.append(cs)
-                        placed = True
-                        break
+        if len(result) == 5:
+            break
+        if not _place(d):
+            _place_fallback()   # a miss here is retried by the top-up below
+
+    while len(result) < 5:
+        if not _place_fallback():
+            raise ValueError(
+                f"make_choices: only built {len(result)} of 5 distinct choices "
+                f"for correct value {correct_val!r} with distractors "
+                f"{list(distractors)!r}"
+            )
 
     return result
+
+
+def resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float:
+    """Return a non-negative absolute tolerance for a numerical-entry question's answer.
+
+    Exactly one of `abs_tol` (already an absolute ± value) or `rel_tol`
+    (a fraction of `value`, e.g. 0.02 for ±2%) must be given.
+    """
+    if (abs_tol is None) == (rel_tol is None):
+        raise ValueError("resolve_tolerance requires exactly one of abs_tol or rel_tol")
+    if not math.isfinite(value):
+        raise ValueError(f"resolve_tolerance: value must be finite, got {value!r}")
+    if abs_tol is not None:
+        if not math.isfinite(abs_tol):
+            raise ValueError(f"resolve_tolerance: abs_tol must be finite, got {abs_tol!r}")
+        tolerance = abs_tol
+    else:
+        if not math.isfinite(rel_tol):
+            raise ValueError(f"resolve_tolerance: rel_tol must be finite, got {rel_tol!r}")
+        tolerance = abs(value) * rel_tol
+    if tolerance < 0:
+        raise ValueError(f"resolve_tolerance: resolved tolerance must be non-negative, got {tolerance!r}")
+    return tolerance
 
 </script>
 
@@ -905,6 +983,15 @@ def apply_answer_positions(data_list, positions, rng):
 
 
 def render_question_block(q_num, data):
+    if data.get("type", "multiple_choice") == "numerical":
+        from questions import phys_fmt
+        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        unit_suffix = f" {data['unit']}" if data.get("unit") else ""
+        ans_str = (
+            f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
+            f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
+        )
+        return "\n".join(lines), ans_str
     lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
@@ -986,8 +1073,10 @@ def render_paper(question_bank, question_order, meta, seed):
 
     order = local_shuffle_order(len(question_order), rng)
     data = [data_orig[i] for i in order]
-    pos_rng = np.random.default_rng([seed, 0xF1A1A])
-    apply_answer_positions(data, assign_answer_positions(len(data), pos_rng), pos_rng)
+    mc_data = [d for d in data if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data:
+        pos_rng = np.random.default_rng([seed, 0xF1A1A])
+        apply_answer_positions(mc_data, assign_answer_positions(len(mc_data), pos_rng), pos_rng)
     lines = [build_header(meta)]
     answers = []
     for i, d in enumerate(data, 1):
@@ -1139,9 +1228,20 @@ def apply_answer_positions(data_list: list, positions: list, rng: np.random.Gene
 def render_question(q_num: int, data: dict) -> tuple[str, str]:
     """Render a single question as a Markdown block.
 
-    Returns (markdown_block, correct_letter).  Choices must already be in their
-    final order (call apply_answer_positions beforehand).
+    Returns (markdown_block, correct_answer_display).  Choices must already be
+    in their final order (call apply_answer_positions beforehand). Numerical
+    questions are not affected by apply_answer_positions and are rendered
+    with a blank answer line instead of lettered choices.
     """
+    if data.get("type", "multiple_choice") == "numerical":
+        from questions import phys_fmt
+        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        unit_suffix = f" {data['unit']}" if data.get("unit") else ""
+        ans_str = (
+            f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
+            f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
+        )
+        return "\n".join(lines), ans_str
     lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
@@ -1248,8 +1348,11 @@ def main():
     order_A = local_shuffle_order(len(modules), rng_A)
     data_A = [data_A_orig[i] for i in order_A]
     # Assign balanced answer positions (6× each letter), shuffle distractors
-    pos_rng_A = np.random.default_rng([args.seed_A, 0xF1A1A])
-    apply_answer_positions(data_A, assign_answer_positions(len(data_A), pos_rng_A), pos_rng_A)
+    # (numerical questions are excluded — see mc_data below)
+    mc_data_A = [d for d in data_A if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_A:
+        pos_rng_A = np.random.default_rng([args.seed_A, 0xF1A1A])
+        apply_answer_positions(mc_data_A, assign_answer_positions(len(mc_data_A), pos_rng_A), pos_rng_A)
 
     # Generate questions for Paper B (different parameters)
     print(f"Generating Paper B (seed={args.seed_B})...")
@@ -1257,8 +1360,10 @@ def main():
     data_B_orig = [mod.generate(rng_B) for mod in modules]
     order_B = local_shuffle_order(len(modules), rng_B)
     data_B = [data_B_orig[i] for i in order_B]
-    pos_rng_B = np.random.default_rng([args.seed_B, 0xF1A1A])
-    apply_answer_positions(data_B, assign_answer_positions(len(data_B), pos_rng_B), pos_rng_B)
+    mc_data_B = [d for d in data_B if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_B:
+        pos_rng_B = np.random.default_rng([args.seed_B, 0xF1A1A])
+        apply_answer_positions(mc_data_B, assign_answer_positions(len(mc_data_B), pos_rng_B), pos_rng_B)
 
     # Generate questions for Paper C (deferred exam)
     print(f"Generating Paper C (seed={args.seed_C})...")
@@ -1266,8 +1371,10 @@ def main():
     data_C_orig = [mod.generate(rng_C) for mod in modules]
     order_C = local_shuffle_order(len(modules), rng_C)
     data_C = [data_C_orig[i] for i in order_C]
-    pos_rng_C = np.random.default_rng([args.seed_C, 0xF1A1A])
-    apply_answer_positions(data_C, assign_answer_positions(len(data_C), pos_rng_C), pos_rng_C)
+    mc_data_C = [d for d in data_C if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_C:
+        pos_rng_C = np.random.default_rng([args.seed_C, 0xF1A1A])
+        apply_answer_positions(mc_data_C, assign_answer_positions(len(mc_data_C), pos_rng_C), pos_rng_C)
 
     # Render
     exam_A_md, answers_A = render_exam("A", data_A)
@@ -1502,6 +1609,59 @@ function syncQsPromptPopover() {
   if (qsEl) qsEl.value = set ? (set.prompt || "") : "";
   const typeEl = document.getElementById("ai-qs-type");
   if (typeEl) typeEl.value = set ? (set.questionType || DEFAULT_QUESTION_TYPE) : DEFAULT_QUESTION_TYPE;
+  syncTextbookPopover();
+}
+
+// Textbook scope lives on the question set, not globally: "Midterm 1" is
+// chapters 1-8 and "Midterm 2" is 9-16, and they are different sets.
+async function syncTextbookPopover() {
+  const booksEl = document.getElementById("ai-textbook-books");
+  const chaptersEl = document.getElementById("ai-textbook-chapters");
+  const creditEl = document.getElementById("ai-textbook-credit");
+  if (!booksEl || !chaptersEl) return;
+
+  const manifest = await _getTextbookManifest();
+  if (!manifest) {
+    booksEl.innerHTML = '<div style="color:#999;font-style:italic;font-size:11px">' +
+      'No textbook corpus found. Build it with <code>scripts/build_textbook_corpus.py</code> ' +
+      '(see the README); the AI works without it.</div>';
+    if (creditEl) creditEl.textContent = "";
+    return;
+  }
+
+  const set = state.questionSets.find(s => s.id === state.selectedSet);
+  const enabled = new Set(set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+  booksEl.innerHTML = "";
+  for (const book of manifest.books) {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;flex-direction:row;align-items:center;gap:5px;" +
+      "font-weight:400;font-size:11px;color:#333;margin:0 0 2px;cursor:pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = enabled.has(book.slug);
+    cb.style.cssText = "margin:0;accent-color:#f0ab00";
+    cb.addEventListener("change", () => {
+      const target = state.questionSets.find(s => s.id === state.selectedSet);
+      if (!target) return;
+      const next = new Set(target.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+      if (cb.checked) next.add(book.slug); else next.delete(book.slug);
+      target.textbookBooks = [...next];
+      debounceSave();
+    });
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(`${book.title} (${book.sections} sections)`));
+    booksEl.appendChild(row);
+  }
+
+  const { formatChapterSpec } = await import("./src/textbook_search.js");
+  chaptersEl.value = formatChapterSpec(set?.textbookChapters || []);
+
+  if (creditEl) {
+    // CC BY-NC-SA requires the credit to travel with the text.
+    creditEl.innerHTML = "Textbook content © OpenStax, " +
+      '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>. ' +
+      'Access for free at <a href="https://openstax.org" target="_blank" rel="noopener">openstax.org</a>.';
+  }
 }
 
 function renderSidebar() {
@@ -1674,7 +1834,7 @@ function makeSetGroup(set) {
 
   addQBtn.addEventListener("click", e => {
     e.stopPropagation();
-    doNewQuestion(set.id);
+    openTypeChoicePopover(addQBtn, type => doNewQuestion(set.id, type));
   });
 
   exportQtiBtn.addEventListener("click", e => {
@@ -1797,11 +1957,16 @@ function makeSidebarItem(q) {
   const stars = document.createElement("span");
   stars.className = "q-stars"; stars.textContent = STARS[q.difficulty] || "\u2605\u2605";
 
+  const typeBadge = document.createElement("span");
+  typeBadge.className = "q-type-badge";
+  typeBadge.title = "Numerical entry";
+  typeBadge.textContent = q.type === "numerical" ? "\ud83d\udd22" : "";
+
   const del = document.createElement("button");
   del.className = "q-delete"; del.title = "Delete question"; del.textContent = "\ud83d\uddd1";
   del.addEventListener("click", e => { e.stopPropagation(); doDeleteQuestion(q.id); });
 
-  div.append(cb, name, stars, del);
+  div.append(cb, name, typeBadge, stars, del);
   div.addEventListener("click", () => selectQuestion(q.id));
   return div;
 }
@@ -1853,6 +2018,8 @@ function selectQuestion(qid) {
   if (pythonEditor) {
     pythonEditor.setValue(q.python_code || "");
   }
+  const typeSelect = document.getElementById("ep-type-select");
+  if (typeSelect) typeSelect.value = q.type || "multiple_choice";
 
   document.getElementById("preview-content").innerHTML =
     '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
@@ -1897,17 +2064,7 @@ function doDeleteQuestion(qid) {
   saveState();
 }
 
-function doNewQuestion(setId) {
-  const targetSet = state.questionSets.find(s => s.id === setId) ||
-                    state.questionSets.find(s => s.id === state.selectedSet) ||
-                    state.questionSets[0];
-  if (!targetSet) { toast("Create a question set first", "error"); return; }
-  const num = String(Date.now()).slice(-6);
-  const qid = `q_new_${num}`;
-  state.questions[qid] = {
-    id: qid, title: qid, topic: "", difficulty: 2, enabled: true,
-    template: "{{ question }}\n",
-    python_code:
+const MC_SCAFFOLD_PY =
 `import numpy as np
 from questions import make_choices, render_template
 
@@ -1921,7 +2078,37 @@ def generate(rng: np.random.Generator) -> dict:
         "topic": "New Topic",
         "difficulty": 2,
     }
-`,
+`;
+
+const NUMERICAL_SCAFFOLD_PY =
+`import numpy as np
+from questions import resolve_tolerance, render_template
+
+def generate(rng: np.random.Generator) -> dict:
+    question = "New numerical question text here."
+    value = 12.3  # the correct numeric answer
+    return {
+        "type": "numerical",
+        "question": question,
+        "answer": value,
+        "tolerance": resolve_tolerance(value, rel_tol=0.02),  # or abs_tol=0.5
+        "unit": "m/s",
+        "topic": "New Topic",
+        "difficulty": 2,
+    }
+`;
+
+function doNewQuestion(setId, type = "multiple_choice") {
+  const targetSet = state.questionSets.find(s => s.id === setId) ||
+                    state.questionSets.find(s => s.id === state.selectedSet) ||
+                    state.questionSets[0];
+  if (!targetSet) { toast("Create a question set first", "error"); return; }
+  const num = String(Date.now()).slice(-6);
+  const qid = `q_new_${num}`;
+  state.questions[qid] = {
+    id: qid, title: qid, topic: "", difficulty: 2, enabled: true, type,
+    template: "{{ question }}\n",
+    python_code: type === "numerical" ? NUMERICAL_SCAFFOLD_PY : MC_SCAFFOLD_PY,
   };
   targetSet.questionOrder.push(qid);
   renderSidebar();
@@ -2015,13 +2202,27 @@ _ns = {}
 exec(compile(_py_code, _qid + ".py", "exec"), _ns)
 _rng = np.random.default_rng(int(_seed))
 _d = _ns["generate"](_rng)
-json.dumps({
-    "question": _d["question"],
-    "choices":  list(_d["choices"]),
-    "answer":   _d["answer"],
-    "topic":    _d.get("topic", ""),
-    "difficulty": int(_d.get("difficulty", 2)),
-})
+if _d.get("type", "multiple_choice") == "numerical":
+    _result = {
+        "type": "numerical",
+        "question": _d["question"],
+        "answer": float(_d["answer"]),
+        "tolerance": float(_d.get("tolerance", 0)),
+        "unit": _d.get("unit", ""),
+        "sig_figs": int(_d.get("sig_figs", 3)),
+        "topic": _d.get("topic", ""),
+        "difficulty": int(_d.get("difficulty", 2)),
+    }
+else:
+    _result = {
+        "type": "multiple_choice",
+        "question": _d["question"],
+        "choices":  list(_d["choices"]),
+        "answer":   _d["answer"],
+        "topic":    _d.get("topic", ""),
+        "difficulty": int(_d.get("difficulty", 2)),
+    }
+json.dumps(_result)
 `);
     renderPreview(JSON.parse(resultJson));
   } catch (e) {
@@ -2039,17 +2240,32 @@ json.dumps({
 
 function renderPreview(data) {
   lastPreviewError = null;   // successful render — no error to report
-  let md = data.question + "\n\n";
-  for (let i = 0; i < 5; i++) {
-    md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
-  }
-  const html = marked.parse(md);
-  const answerText = data.choices[LETTERS.indexOf(data.answer)] || "";
   const topicHtml = data.topic ? ` &nbsp;|&nbsp; ${escHtml(data.topic)}` : "";
   const diffHtml  = ` &nbsp;|&nbsp; ${STARS[data.difficulty] || "\u2605\u2605"}`;
-  document.getElementById("preview-content").innerHTML =
-    `<div>${html}</div>` +
-    `<div class="preview-answer">\u2713 Correct: <strong>(${data.answer})</strong> ${escHtml(answerText)}${topicHtml}${diffHtml}</div>`;
+
+  if (data.type === "numerical") {
+    const html = marked.parse(data.question + "\n\n");
+    const unitSuffix = data.unit ? ` ${escHtml(data.unit)}` : "";
+    // Round to the question's own sig_figs (default 3, matching phys_fmt's
+    // default) for display only \u2014 avoids float noise like
+    // resolve_tolerance(12.3, rel_tol=0.02) === 0.24600000000000002.
+    const sigFigs = Number.isInteger(data.sig_figs) && data.sig_figs > 0 ? data.sig_figs : 3;
+    const roundSig = n => (Number.isFinite(n) ? Number(n.toPrecision(sigFigs)) : n);
+    const answerText = `${roundSig(data.answer)}${unitSuffix} (\u00b1 ${roundSig(data.tolerance)}${unitSuffix})`;
+    document.getElementById("preview-content").innerHTML =
+      `<div>${html}</div>` +
+      `<div class="preview-answer">\u2713 Correct: <strong>${answerText}</strong>${topicHtml}${diffHtml}</div>`;
+  } else {
+    let md = data.question + "\n\n";
+    for (let i = 0; i < 5; i++) {
+      md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
+    }
+    const html = marked.parse(md);
+    const answerText = data.choices[LETTERS.indexOf(data.answer)] || "";
+    document.getElementById("preview-content").innerHTML =
+      `<div>${html}</div>` +
+      `<div class="preview-answer">\u2713 Correct: <strong>(${data.answer})</strong> ${escHtml(answerText)}${topicHtml}${diffHtml}</div>`;
+  }
   if (window.MathJax?.typesetPromise) {
     MathJax.typesetPromise([document.getElementById("preview-content")]).catch(console.error);
   }
@@ -2111,6 +2327,14 @@ function collectEnabledPool() {
   return { enabledOrder, enabledBank };
 }
 
+// Answer-position balancing (the "divisible by 5" requirement) only applies
+// to multiple-choice questions — numerical questions have no lettered
+// choices to balance. Uses the denormalized state.questions[qid].type so
+// this can run before Pyodide materialization.
+function countEnabledMC(enabledOrder, enabledBank) {
+  return enabledOrder.filter(qid => (enabledBank[qid]?.type || "multiple_choice") !== "numerical").length;
+}
+
 // Materialize one paper (one seed) via Pyodide: runs every enabled question's
 // generate(rng), applies the paper-wide answer-position balancing, and returns
 // the rendered markdown/answers alongside the structured per-question data
@@ -2138,8 +2362,9 @@ async function doRenderAll() {
   if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
   const { enabledOrder, enabledBank } = collectEnabledPool();
   if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
-  if (enabledOrder.length % 5 !== 0) {
-    if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
+  const mcCount = countEnabledMC(enabledOrder, enabledBank);
+  if (mcCount > 0 && mcCount % 5 !== 0) {
+    if (!confirm(`${mcCount} multiple-choice questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
   const papers = (state.settings.papers || ["A"]);
   if (papers.length === 0) { toast("No papers selected!", "error"); return; }
@@ -2419,6 +2644,19 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
   const pop = document.getElementById("qti-paper-popover");
   pop.innerHTML = "";
 
+  // Declared before the button loop so both a button click and an outside
+  // click can remove it — a button click alone (without this) would leave
+  // the listener dangling on `document` with nothing left to ever remove it.
+  const closeOnOutsideClick = e => {
+    if (!pop.contains(e.target) && e.target !== triggerEl) {
+      closePopover();
+    }
+  };
+  const closePopover = () => {
+    pop.classList.remove("open");
+    document.removeEventListener("click", closeOnOutsideClick);
+  };
+
   const label = document.createElement("div");
   label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
   label.textContent = "Export which paper?";
@@ -2435,7 +2673,7 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
     btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
     btn.textContent = `Paper ${paper}`;
     btn.addEventListener("click", () => {
-      pop.classList.remove("open");
+      closePopover();
       onChosen(paper);
     });
     row.appendChild(btn);
@@ -2461,15 +2699,67 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
     pop.style.left = margin + "px";
   }
 
+  setTimeout(() => {
+    if (!pop.classList.contains("open")) return;
+    document.addEventListener("click", closeOnOutsideClick);
+  }, 0);
+}
+
+// Reuses the same popover element/positioning as openQtiPaperPopover above,
+// just with a different button set (question type instead of paper letter).
+function openTypeChoicePopover(triggerEl, onChosen) {
+  const pop = document.getElementById("qti-paper-popover");
+  pop.innerHTML = "";
+
+  // Declared before the button loop so both a button click and an outside
+  // click can remove it — a button click alone (without this) would leave
+  // the listener dangling on `document` with nothing left to ever remove it.
   const closeOnOutsideClick = e => {
     if (!pop.contains(e.target) && e.target !== triggerEl) {
-      pop.classList.remove("open");
-      document.removeEventListener("click", closeOnOutsideClick);
+      closePopover();
     }
   };
-  // A paper button's own click handler can close the popover (by picking a
-  // paper) before this fires. Registering the listener anyway would leave it
-  // dangling on `document` with nothing left to ever remove it.
+  const closePopover = () => {
+    pop.classList.remove("open");
+    document.removeEventListener("click", closeOnOutsideClick);
+  };
+
+  const label = document.createElement("div");
+  label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
+  label.textContent = "New question type?";
+  pop.appendChild(label);
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px";
+  for (const [value, label_] of [["multiple_choice", "Multiple Choice"], ["numerical", "Numerical Entry"]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
+    btn.textContent = label_;
+    btn.addEventListener("click", () => {
+      closePopover();
+      onChosen(value);
+    });
+    row.appendChild(btn);
+  }
+  pop.appendChild(row);
+
+  const rect = triggerEl.getBoundingClientRect();
+  pop.style.right = "auto";
+  pop.style.bottom = "auto";
+  pop.style.top = (rect.bottom + 4) + "px";
+  pop.style.left = rect.left + "px";
+  pop.classList.add("open");
+
+  const margin = 8;
+  const popRect = pop.getBoundingClientRect();
+  if (popRect.right > window.innerWidth - margin) {
+    pop.style.left = Math.max(margin, window.innerWidth - popRect.width - margin) + "px";
+  }
+  if (pop.getBoundingClientRect().left < margin) {
+    pop.style.left = margin + "px";
+  }
+
   setTimeout(() => {
     if (!pop.classList.contains("open")) return;
     document.addEventListener("click", closeOnOutsideClick);
@@ -2483,8 +2773,9 @@ async function exportQtiForPaper(paper, qidFilter, filenameHint) {
   if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
   const { enabledOrder, enabledBank } = collectEnabledPool();
   if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
-  if (enabledOrder.length % 5 !== 0) {
-    if (!confirm(`${enabledOrder.length} questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
+  const mcCount = countEnabledMC(enabledOrder, enabledBank);
+  if (mcCount > 0 && mcCount % 5 !== 0) {
+    if (!confirm(`${mcCount} multiple-choice questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
   // Matches doRenderAll's exact fallback formula (state.settings.papers, indexed
@@ -2564,6 +2855,17 @@ function bindSettings() {
       debounceSave();
     });
   });
+  const chaptersEl = document.getElementById("ai-textbook-chapters");
+  if (chaptersEl) {
+    chaptersEl.addEventListener("input", async () => {
+      const set = state.questionSets.find(s => s.id === state.selectedSet);
+      if (!set) return;
+      const { parseChapterSpec } = await import("./src/textbook_search.js");
+      set.textbookChapters = parseChapterSpec(chaptersEl.value);
+      debounceSave();
+    });
+  }
+
   // AI popover question-set prompt syncs with the selected set's prompt
   const qsPromptEl = document.getElementById("ai-qs-prompt");
   if (qsPromptEl) {
@@ -2756,6 +3058,14 @@ function setupEditors() {
     q.python_code = pythonEditor.getValue();
     debounceSave();
   });
+
+  document.getElementById("ep-type-select")?.addEventListener("change", e => {
+    if (!state.selectedQuestion) return;
+    const q = state.questions[state.selectedQuestion]; if (!q) return;
+    q.type = e.target.value;
+    debounceSave();
+    toast("Type changed — update the Python generator's return shape to match", "");
+  });
 }
 
 // ── Main init ──────────────────────────────────────────────────────────────
@@ -2871,13 +3181,16 @@ const NEW_SYSTEM_PROMPT_OPENING =
 // Follows the recommended markdown-header format for Gemini system prompts.
 const DEFAULT_SYSTEM_PROMPT = `\
 You are an expert physics exam question author helping edit a parametrized \
-multiple-choice question.
+multiple-choice or numerical-entry question.
 
 ## Python generator function
 
 The Python code must define a \`generate(rng: numpy.random.Generator) -> dict\` function.
-The function receives a seeded NumPy random generator and must return a dict with
-exactly these keys:
+The function receives a seeded NumPy random generator and must return a dict.
+There are two question types, chosen by the \`type\` key (default "multiple_choice"
+if omitted) — use whichever the current question already is:
+
+### Multiple choice
 
   question   : str        — full question text (plain text or Markdown / LaTeX)
   choices    : list[str]  — exactly 5 answer choice strings, e.g. ["1.23 m", ...]
@@ -2885,15 +3198,29 @@ exactly these keys:
                            using make_choices (correct value placed at index 0);
                            use 'b'–'e' only when building choices manually
   topic      : str        — brief topic label, e.g. "Ch. 4 — Newton's 2nd Law"
-  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+  difficulty : int        — difficulty level 1 (easy) to 4 (hardest)
 
 The exam framework automatically shuffles answer positions before printing, so
 there is no need to randomize the correct answer position yourself.
 
+### Numerical entry
+
+  type       : str        — must be "numerical"
+  question   : str        — full question text (plain text or Markdown / LaTeX)
+  answer     : float       — the correct numeric value
+  tolerance  : float       — absolute ± tolerance, resolved via resolve_tolerance()
+  unit       : str        — optional display unit, e.g. "m/s"
+  sig_figs   : int        — optional display precision (default 3)
+  topic      : str        — brief topic label
+  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+
+Numerical questions have no lettered choices and are graded as "within tolerance
+of answer", not by exact match.
+
 ## Helper functions (import from \`questions\`)
 
 \`\`\`python
-from questions import render_template, make_choices, phys_fmt
+from questions import render_template, make_choices, phys_fmt, resolve_tolerance
 \`\`\`
 
 - \`render_template(question_id: str, params: dict) -> str\`
@@ -2904,12 +3231,17 @@ from questions import render_template, make_choices, phys_fmt
 - \`make_choices(correct_val: float, distractors: list[float], fmt: callable) -> list[str]\`
   Builds a list of 5 unique, well-spaced choice strings. The correct answer is always
   at index 0 (answer = 'a'). \`fmt\` is a callable that converts a float to a display
-  string, e.g. \`lambda v: f"{v:.2f} m"\`.
+  string, e.g. \`lambda v: f"{v:.2f} m"\`. Multiple choice only.
 
 - \`phys_fmt(v: float, sig: int = 3) -> str\`
   Formats a number with \`sig\` significant figures for a printed exam. Automatically
   uses LaTeX scientific notation (e.g. \`$1.23 \\times 10^{4}$\`) for very large or
   very small values.
+
+- \`resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float\`
+  Numerical-entry only. Returns an absolute tolerance from either an absolute value
+  (\`abs_tol\`) or a fraction of \`value\` (\`rel_tol\`, e.g. 0.02 for ±2%). Exactly one
+  of the two must be given.
 
 ## Jinja2 template
 
@@ -2917,6 +3249,13 @@ The template renders the question text. Variables from the \`params\` dict are
 available as top-level template variables. Use \`{{ variable }}\` for substitution
 and \`{% if %} / {% elif %} / {% else %} / {% endif %}\` for conditionals.
 LaTeX math is written inline as \`$...$\`.
+
+## Runtime limits
+
+Questions run in the browser under Pyodide, which provides numpy, jinja2 and the
+Python standard library only. There is no networking (\`socket\`, \`urllib\`, \`http\`,
+\`ssl\`), no \`subprocess\` and no real threading, so a generator must rely on plain
+arithmetic, numpy and \`math\`.
 
 ## Workflow guidelines
 
@@ -3234,6 +3573,92 @@ async function doTestStream() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Textbook corpus (OpenStax, built into ./corpus at deploy time)
+//
+// Retrieval runs entirely in the browser: nothing about the question bank is
+// sent anywhere to search the books.  Everything here degrades to "no textbook"
+// if ./corpus is missing, so a fork that never runs the build still works.
+// ---------------------------------------------------------------------------
+let _textbookCorpus = null;
+let _textbookManifest;   // undefined = not tried yet, null = unavailable
+
+async function _getTextbookCorpus() {
+  if (!_textbookCorpus) {
+    const { createCorpus } = await import("./src/textbook_search.js");
+    _textbookCorpus = createCorpus({
+      baseUrl: "./corpus",
+      fetchJson: async (url) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${res.status} fetching ${url}`);
+        return res.json();
+      },
+    });
+  }
+  return _textbookCorpus;
+}
+
+async function _getTextbookManifest() {
+  if (_textbookManifest !== undefined) return _textbookManifest;
+  try {
+    // doSendChat awaits this on every turn, so a stalled fetch would look like
+    // the AI hanging.  The manifest is a small file on the app's own origin:
+    // if it has not arrived in five seconds it is not going to.
+    _textbookManifest = await Promise.race([
+      (await _getTextbookCorpus()).manifest(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timed out after 5s")), 5000)),
+    ]);
+  } catch (e) {
+    console.warn("[AI] textbook corpus unavailable — continuing without it:", e.message);
+    _textbookManifest = null;
+  }
+  return _textbookManifest;
+}
+
+// Matches the OpenStax line already in the default question-set prompt.  New
+// and pre-existing sets both pick this up, so no state migration is needed --
+// but an explicitly empty list means "no textbook", not "fall back to the
+// default", which is why this uses ?? rather than ||.
+const DEFAULT_TEXTBOOK_BOOKS = ["college-physics-2e"];
+
+function _activeSetTextbookScope() {
+  const set = state.questionSets.find(s => s.id === state.selectedSet);
+  const books = set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS;
+  return { books, chapters: set?.textbookChapters || [], disabled: books.length === 0 };
+}
+
+// The always-on catalog is chapter-level on purpose: seven books come to ~740
+// sections, which would be ~18k tokens on every turn including the ones that
+// just fix a typo.  Chapters cost ~1.7k and still let the model name section
+// ids it can then request directly.
+async function _buildTextbookCatalog() {
+  const scope = _activeSetTextbookScope();
+  if (scope.disabled) return "";
+  const manifest = await _getTextbookManifest();
+  if (!manifest) return "";
+  const { buildCatalog } = await import("./src/textbook_search.js");
+  return buildCatalog(manifest, scope);
+}
+
+async function _resolveTextbookSearch(req) {
+  const corpus = await _getTextbookCorpus();
+  const { searchTextbook, formatSectionsForPrompt } = await import("./src/textbook_search.js");
+  const scope = _activeSetTextbookScope();
+  const result = await searchTextbook({
+    query: req.query,
+    section_ids: req.section_ids,
+    include: req.include,
+    max_sections: req.max_sections,
+    // An explicit tool argument wins; otherwise the question set's own scope.
+    books: req.books?.length ? req.books : scope.books,
+    chapters: req.chapters?.length ? req.chapters : scope.chapters,
+  }, { corpus });
+  console.log("[AI] textbook search:", req.query || (req.section_ids || []).join(","),
+              "→", result.hits.map(h => `${h.slug}:${h.number}`).join(", ") || "(no match)");
+  return formatSectionsForPrompt(result, { include: req.include });
+}
+
 function _buildBankSummary() {
   if (!state || !state.questionSets || !state.questions) return "";
   const lines = [];
@@ -3289,10 +3714,16 @@ async function doSendChat() {
 
   let createCount = 0;
 
+  // Chapter-level table of contents of the books this question set is scoped to.
+  // Empty string when ./corpus was never built, which disables the feature
+  // rather than breaking the turn.
+  const textbookCatalog = await _buildTextbookCatalog();
+  let textbookQuery = "";
+
   // Inner function: performs one fetch+stream attempt with the given bankSummary
   // and optional requestedQuestion data.
   // Returns an object: { needsBank: bool, neededQuestionId: string|null }
-  const _doRequest = async (bankSummary, requestedQuestion = null) => {
+  const _doRequest = async (bankSummary, requestedQuestion = null, textbookContext = "") => {
     const _chatAbort = new AbortController();
     const _chatTimeout = setTimeout(() => _chatAbort.abort(new Error("Request timed out after 90s")), 90000);
     let res;
@@ -3323,6 +3754,9 @@ async function doSendChat() {
           requested_question_id: requestedQuestion?.question_id || "",
           requested_question_template: requestedQuestion?.template || "",
           requested_question_python_code: requestedQuestion?.python_code || "",
+          textbook_catalog: textbookCatalog,
+          textbook_context: textbookContext,
+          textbook_query: textbookQuery,
         }),
       });
     } finally {
@@ -3342,6 +3776,7 @@ async function doSendChat() {
     let streamDone = false;
     let needsBankSummary = false;
     let neededQuestionId = null;
+    let neededTextbook = null;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -3381,6 +3816,19 @@ async function doSendChat() {
             } else if (evt.tool === "get_question") {
               console.log("[AI] AI requested question:", evt.question_id, "— aborting stream and retrying with question data");
               neededQuestionId = evt.question_id || null;
+              reader.cancel();
+              streamDone = true;
+              break;
+            } else if (evt.tool === "search_textbook") {
+              console.log("[AI] AI requested textbook search — aborting stream and retrying with excerpts");
+              neededTextbook = {
+                query: evt.query || "",
+                section_ids: evt.section_ids || [],
+                books: evt.books || [],
+                chapters: evt.chapters || [],
+                include: evt.include || [],
+                max_sections: evt.max_sections || 3,
+              };
               reader.cancel();
               streamDone = true;
               break;
@@ -3439,7 +3887,7 @@ async function doSendChat() {
       }
     }
 
-    return { needsBank: needsBankSummary, neededQuestionId };
+    return { needsBank: needsBankSummary, neededQuestionId, neededTextbook };
   };
 
   let assistantText = "";
@@ -3448,14 +3896,22 @@ async function doSendChat() {
     // Retry loop: the AI may request the question bank or a specific question
     // before it has enough context to respond.  We honour both signals in any
     // order, up to MAX_TOOL_RETRIES total retries.
-    const MAX_TOOL_RETRIES = 3;
+    // Four, not three: there are now three distinct context signals the AI can
+    // raise (bank, single question, textbook), and each costs one retry.
+    const MAX_TOOL_RETRIES = 4;
     let activeBankSummary = "";
     let requestedQuestion = null;
+    // Unlike the bank and the single-question fields, textbook excerpts
+    // accumulate. The transport re-sends the whole conversation on each retry
+    // and the server then drops the tool, so a search that comes back thin
+    // would otherwise leave the model with no way to ask again.
+    let activeTextbookContext = "";
+    const servedTextbookKeys = new Set();
     let retries = 0;
 
-    let { needsBank, neededQuestionId } = await _doRequest("", null);
+    let { needsBank, neededQuestionId, neededTextbook } = await _doRequest("", null, "");
 
-    while ((needsBank || neededQuestionId) && retries < MAX_TOOL_RETRIES) {
+    while ((needsBank || neededQuestionId || neededTextbook) && retries < MAX_TOOL_RETRIES) {
       retries++;
 
       if (needsBank) {
@@ -3488,10 +3944,38 @@ async function doSendChat() {
         };
       }
 
-      ({ needsBank, neededQuestionId } = await _doRequest(activeBankSummary, requestedQuestion));
+      if (neededTextbook) {
+        const key = JSON.stringify(neededTextbook);
+        if (servedTextbookKeys.has(key)) {
+          console.warn("[AI] AI repeated the same textbook search — ignoring.");
+          break;
+        }
+        servedTextbookKeys.add(key);
+        const label = neededTextbook.query
+          || (neededTextbook.section_ids || []).join(", ")
+          || "the textbook";
+        aEl.innerHTML = `<span style="color:#aaa">Searching the textbook for <b>${escHtml(label)}</b>…</span>`;
+        assistantText = "";
+        try {
+          const excerpt = await _resolveTextbookSearch(neededTextbook);
+          const { MAX_CONTEXT_CHARS } = await import("./src/textbook_search.js");
+          if (activeTextbookContext.length + excerpt.length <= MAX_CONTEXT_CHARS) {
+            activeTextbookContext += excerpt;
+            textbookQuery = label;
+          } else {
+            console.warn("[AI] textbook context budget reached — ignoring further excerpts.");
+          }
+        } catch (e) {
+          console.warn("[AI] textbook search failed:", e.message);
+          activeTextbookContext += `=== TEXTBOOK EXCERPTS ===\nThe textbook could not be searched (${e.message}). Answer without it and say so.\n`;
+        }
+      }
+
+      ({ needsBank, neededQuestionId, neededTextbook } =
+        await _doRequest(activeBankSummary, requestedQuestion, activeTextbookContext));
     }
 
-    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId)) {
+    if (retries >= MAX_TOOL_RETRIES && (needsBank || neededQuestionId || neededTextbook)) {
       console.warn("[AI] reached max tool retries without completing the turn.");
     }
 
@@ -3774,6 +4258,7 @@ function setupAIChat() {
   setupCollapsible("hdr-system-prompt", "body-system-prompt", "arr-system-prompt");
   setupCollapsible("hdr-qs-type",       "body-qs-type",       "arr-qs-type");
   setupCollapsible("hdr-qs-prompt",     "body-qs-prompt",     "arr-qs-prompt");
+  setupCollapsible("hdr-textbook",      "body-textbook",      "arr-textbook");
 
   // System prompt live save
   if (sysEl) {

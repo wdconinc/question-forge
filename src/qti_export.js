@@ -143,11 +143,21 @@ function mattext(html) {
 
 // ── QTI 1.2 <item> builder ───────────────────────────────────────────────────
 
-// question: { qid, title?, question, choices: [5 strings], answer: "a".."e" }
+// question: either
+//   { qid, title?, question, choices: [5 strings], answer: "a".."e" }         (multiple choice)
+// or
+//   { qid, title?, type: "numerical", question, answer: number, tolerance: number, unit? }
 // opts: { latexToMathML, usedIds?: Set, failures?: Array }
 // Returns an `el(...)` node (an <item>, not a full document — it's nested
 // inside the single combined <objectbank> built by buildObjectBankXml).
 export async function buildItemNode(question, opts) {
+  if (question.type === "numerical") {
+    return buildNumericalItemNode(question, opts);
+  }
+  return buildMultipleChoiceItemNode(question, opts);
+}
+
+async function buildMultipleChoiceItemNode(question, opts) {
   const { latexToMathML } = opts;
   const usedIds = opts.usedIds || new Set();
   const failures = opts.failures || [];
@@ -187,6 +197,68 @@ export async function buildItemNode(question, opts) {
     el("outcomes", {}, [el("decvar", { varname: "SCORE", vartype: "Decimal", minvalue: "0", maxvalue: "100" })]),
     el("respcondition", { continue: "No" }, [
       el("conditionvar", {}, [el("varequal", { respident: "response1" }, [text(correctChoiceId)])]),
+      el("setvar", { action: "Set", varname: "SCORE" }, [text("100")]),
+    ]),
+  ]);
+
+  return { id, node: el("item", { ident: id, title: question.title || question.qid }, [itemmetadata, presentation, resprocessing]) };
+}
+
+// Numeric fill-in-the-blank item: standard QTI 1.2 ASI response_num/render_fib,
+// with a tolerance range matched via <and><vargte/><varlte/></and>.
+//
+// UNVERIFIED cc_profile choice: Common Cartridge 1.1's formal profile list has
+// no dedicated numeric-tolerance type — cc.fib.v0p1 is defined there for
+// literal string matching, not numeric ranges. It's the closest available
+// signal, used here as a best-effort extrapolation (same spirit as the
+// cc.multiple_choice.v0p1 discovery above), not a confirmed-correct value.
+// Treat a numerical export as unverified until confirmed with a real D2L
+// test-import, same as the multiple-choice exporter needed.
+async function buildNumericalItemNode(question, opts) {
+  const { latexToMathML } = opts;
+  const usedIds = opts.usedIds || new Set();
+  const failures = opts.failures || [];
+  if (typeof latexToMathML !== "function") {
+    throw new Error("buildItemNode requires opts.latexToMathML");
+  }
+
+  const id = sanitizeIdentifier(question.qid, usedIds);
+  const answer = Number(question.answer);
+  const tolerance = Number(question.tolerance ?? 0);
+  if (!Number.isFinite(answer)) {
+    throw new Error(`buildItemNode: question ${question.qid} has invalid numerical answer "${question.answer}"`);
+  }
+  if (!Number.isFinite(tolerance)) {
+    throw new Error(`buildItemNode: question ${question.qid} has invalid tolerance "${question.tolerance}"`);
+  }
+  if (tolerance < 0) {
+    throw new Error(`buildItemNode: question ${question.qid} has a negative tolerance "${question.tolerance}"`);
+  }
+
+  const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures });
+
+  const itemmetadata = el("itemmetadata", {}, [
+    el("qtimetadata", {}, [
+      el("qtimetadatafield", {}, [el("fieldlabel", {}, [text("cc_profile")]), el("fieldentry", {}, [text("cc.fib.v0p1")])]),
+    ]),
+  ]);
+
+  const presentation = el("presentation", {}, [
+    mattext(stemHtml),
+    el("response_num", { ident: "response1", rcardinality: "Single", numtype: "Decimal" }, [
+      el("render_fib", { fibtype: "Decimal", rows: "1", columns: "10", prompt: "Box" }),
+    ]),
+  ]);
+
+  const resprocessing = el("resprocessing", {}, [
+    el("outcomes", {}, [el("decvar", { varname: "SCORE", vartype: "Decimal", minvalue: "0", maxvalue: "100" })]),
+    el("respcondition", { continue: "No" }, [
+      el("conditionvar", {}, [
+        el("and", {}, [
+          el("vargte", { respident: "response1" }, [text(String(answer - tolerance))]),
+          el("varlte", { respident: "response1" }, [text(String(answer + tolerance))]),
+        ]),
+      ]),
       el("setvar", { action: "Set", varname: "SCORE" }, [text("100")]),
     ]),
   ]);
@@ -264,7 +336,9 @@ export function buildManifestXml(bankId, opts = {}) {
 
 // ── Full package ──────────────────────────────────────────────────────────────
 
-// materializedQuestions: [{ qid, title?, question, choices, answer, topic?, difficulty? }]
+// materializedQuestions: [{ qid, title?, question, topic?, difficulty?, ...
+//   (choices, answer) for multiple choice, or
+//   (type: "numerical", answer, tolerance, unit?) for numerical entry ]
 // opts: { latexToMathML, manifestId?, zipFactory? } — zipFactory defaults to
 // the browser global JSZip; tests inject a fake to avoid needing a real
 // dependency.
