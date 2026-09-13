@@ -6,6 +6,7 @@ import {
   formatSectionsForPrompt,
   buildCatalog,
   MAX_CONTEXT_CHARS,
+  MAX_SECTIONS,
 } from "./textbook_search.js";
 
 // A two-book corpus held in memory.  No network, no files: createCorpus takes
@@ -179,7 +180,18 @@ test("a query no section covers returns no hits at all", async () => {
 test("max_sections is clamped to a sane range", async () => {
   const { corpus } = makeFixture();
   const r = await searchTextbook({ query: "motion", max_sections: 99 }, { corpus });
-  assert.ok(r.hits.length <= 6, "must not return more than the hard ceiling");
+  assert.ok(r.hits.length <= MAX_SECTIONS, "must not return more than the hard ceiling");
+});
+
+test("explicit section_ids obey the same ceiling as a ranked search", async () => {
+  // This branch used to slice to 8, contradicting the tool schema's documented
+  // 1-6 range and letting a single lookup overfill the prompt budget.
+  const { corpus } = makeFixture();
+  const ids = ["book-a:1.1", "book-a:1.2", "book-a:2.1", "book-b:1.1", "book-b:1.2",
+               "book-a:1.1", "book-a:1.2", "book-a:2.1"];
+  const r = await searchTextbook({ section_ids: ids }, { corpus });
+  assert.ok(r.hits.length + r.missing.length <= MAX_SECTIONS,
+    `resolved ${r.hits.length} hits + ${r.missing.length} missing from ${ids.length} ids`);
 });
 
 test("formatSectionsForPrompt emits a citable handle and one attribution per book", async () => {
@@ -209,13 +221,36 @@ test("include ignores unknown part names rather than rendering nothing", async (
 });
 
 test("formatSectionsForPrompt never exceeds maxChars", async () => {
+  // This asserted `<= budget + 200` and so did not catch that the attribution
+  // footer and the missing-sections line were appended *after* the packing
+  // loop.  An over-budget string makes the caller -- which compares accumulated
+  // length against MAX_CONTEXT_CHARS -- drop the entire excerpt, so the bound
+  // has to be exact.
   const { corpus } = makeFixture();
   const r = await searchTextbook({ section_ids: ["book-a:1.1", "book-a:1.2", "book-a:2.1"] }, { corpus });
-  for (const budget of [400, 900, 2000]) {
+  for (const budget of [400, 900, 2000, 5000]) {
     const out = formatSectionsForPrompt(r, { include: ["summary", "body"], maxChars: budget });
-    assert.ok(out.length <= budget + 200,
-      `budget ${budget} produced ${out.length} chars`);
+    assert.ok(out.length <= budget, `budget ${budget} produced ${out.length} chars`);
   }
+});
+
+test("the attribution footer is still emitted when the budget is tight", async () => {
+  // Budgeting must not be achieved by dropping the credit: CC BY-NC-SA requires
+  // it to travel with the text.
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ section_ids: ["book-a:1.1"] }, { corpus });
+  const out = formatSectionsForPrompt(r, { include: ["body"], maxChars: 600 });
+  assert.ok(out.length <= 600);
+  assert.match(out, /Sources: .*Book A/);
+});
+
+test("maxChars accounts for the missing-sections line too", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook(
+    { section_ids: ["book-a:1.1", "book-a:9.9", "book-b:8.8"] }, { corpus });
+  const out = formatSectionsForPrompt(r, { maxChars: 1200 });
+  assert.ok(out.length <= 1200, `produced ${out.length} chars`);
+  assert.match(out, /Not found in the enabled textbooks/);
 });
 
 test("an empty result tells the model to say so rather than invent content", () => {

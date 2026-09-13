@@ -24,6 +24,15 @@ import { combineStats, rankSections, tokenize } from "./textbook_index.js";
 /** Hard ceiling on injected context, across all accumulated searches in a turn. */
 export const MAX_CONTEXT_CHARS = 120000;
 
+/**
+ * Most sections one lookup may return, matching the `max_sections` range in the
+ * search_textbook schema.  Explicit section_ids are capped here too: naming
+ * eight sections is still a request the prompt budget has to absorb, and a
+ * second, larger limit hidden in that branch was exactly the kind of quiet
+ * contract drift that overfills the context.
+ */
+export const MAX_SECTIONS = 6;
+
 const DEFAULT_INCLUDE = ["objectives", "summary", "equations", "examples", "problems"];
 const KNOWN_INCLUDE = new Set([...DEFAULT_INCLUDE, "body", "conceptual", "glossary"]);
 
@@ -89,7 +98,7 @@ export async function searchTextbook(args = {}, deps = {}) {
   const query = String(args.query || "").trim();
   const sectionIds = Array.isArray(args.section_ids) ? args.section_ids : [];
   const chapters = Array.isArray(args.chapters) ? args.chapters : [];
-  const maxSections = Math.max(1, Math.min(Number(args.max_sections) || 3, 6));
+  const maxSections = Math.max(1, Math.min(Number(args.max_sections) || 3, MAX_SECTIONS));
 
   const manifest = await corpus.manifest();
   const books = activeBooks(manifest, args.books);
@@ -99,7 +108,10 @@ export async function searchTextbook(args = {}, deps = {}) {
   const missing = [];
 
   if (sectionIds.length) {
-    for (const handle of sectionIds.slice(0, 8)) {
+    // Explicitly named sections are served up to the same ceiling as a ranked
+    // search.  They are not narrowed to `maxSections`, which the model may not
+    // have set: having named them, it has stated its intent.
+    for (const handle of sectionIds.slice(0, MAX_SECTIONS)) {
       const { slug, number } = parseHandle(handle, books);
       const candidates = slug ? [bySlug.get(slug)] : books;
       let found = null;
@@ -225,6 +237,26 @@ export function formatSectionsForPrompt(result, opts = {}) {
     "Reference only. Write original, parametrized questions in this style; do not " +
     "reproduce this text verbatim. Cite only the section handles shown below.\n";
 
+  const missing = result.missing && result.missing.length
+    ? `Not found in the enabled textbooks: ${result.missing.join(", ")}\n`
+    : "";
+  const renderFooter = (srcs) =>
+    "\n" + "-".repeat(60) + "\nSources: " + [...srcs.values()].join(" | ") + "\n";
+
+  // The attribution footer and the missing-sections line are appended after the
+  // packing loop, so they have to be budgeted for before it -- otherwise the
+  // returned string overruns maxChars and the caller, which compares
+  // accumulated length against MAX_CONTEXT_CHARS, silently drops the whole
+  // excerpt.  Reserve the worst case (every hit contributing attribution); the
+  // footer actually emitted covers a subset of those and so is never longer.
+  const worstCaseSources = new Map();
+  for (const hit of result.hits) {
+    if (hit.attribution) {
+      worstCaseSources.set(hit.slug, `${hit.attribution} (${hit.license || "CC BY-NC-SA 4.0"})`);
+    }
+  }
+  const budget = maxChars - renderFooter(worstCaseSources).length - missing.length;
+
   const chunks = [];
   let used = head.length;
   const sources = new Map();
@@ -232,17 +264,17 @@ export function formatSectionsForPrompt(result, opts = {}) {
   for (const hit of result.hits) {
     const header = `\n${"-".repeat(60)}\n[${hit.slug}:${hit.number}] ${hit.bookTitle}` +
       ` — Ch.${hit.chapter} ${hit.chapterTitle}\n§${hit.number} ${hit.title}\n`;
-    if (used + header.length >= maxChars) break;
+    if (used + header.length >= budget) break;
 
     let body = header;
     for (const part of renderParts(hit, include)) {
       const candidate = part.text + "\n";
-      if (used + body.length + candidate.length <= maxChars) {
+      if (used + body.length + candidate.length <= budget) {
         body += candidate;
       } else if (part.key === "body") {
         // Prose is the one unbounded part; trim it on a line boundary rather
         // than dropping the whole section.
-        const room = maxChars - used - body.length - 40;
+        const room = budget - used - body.length - 40;
         if (room > 400) {
           const cut = part.text.lastIndexOf("\n", room);
           body += part.text.slice(0, cut > 400 ? cut : room) + "\n…[section text truncated]\n";
@@ -257,11 +289,7 @@ export function formatSectionsForPrompt(result, opts = {}) {
     if (hit.attribution) sources.set(hit.slug, `${hit.attribution} (${hit.license || "CC BY-NC-SA 4.0"})`);
   }
 
-  const footer = "\n" + "-".repeat(60) + "\nSources: " + [...sources.values()].join(" | ") + "\n";
-  const missing = result.missing && result.missing.length
-    ? `Not found in the enabled textbooks: ${result.missing.join(", ")}\n`
-    : "";
-  return head + chunks.join("") + footer + missing;
+  return head + chunks.join("") + renderFooter(sources) + missing;
 }
 
 /**

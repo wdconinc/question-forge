@@ -192,7 +192,7 @@ def mathml_to_latex(elem):
         elif len(text) == 1:
             out = _map_chars(text)
         else:
-            out = r"\mathrm{%s}" % _tex_escape(text)
+            out = rf"\mathrm{{{_tex_escape(text)}}}"
         return _wrap_variant(elem, out)
 
     if tag == "mn":
@@ -218,7 +218,7 @@ def mathml_to_latex(elem):
             return _wrap_variant(elem, GREEK[text])
         if text.lower() in FUNCS:
             return _wrap_variant(elem, "\\" + text.lower())
-        return _wrap_variant(elem, r"\text{%s}" % _tex_escape(_map_greek_only(text)))
+        return _wrap_variant(elem, rf"\text{{{_tex_escape(_map_greek_only(text))}}}")
 
     if tag == "mspace":
         return r"\;"
@@ -230,36 +230,36 @@ def mathml_to_latex(elem):
         return _wrap_variant(elem, joined())
 
     if tag == "msub":
-        return "%s_{%s}" % (_brace(sub(0)), sub(1))
+        return f"{_brace(sub(0))}_{{{sub(1)}}}"
     if tag == "msup":
-        return "%s^{%s}" % (_brace(sub(0)), sub(1))
+        return f"{_brace(sub(0))}^{{{sub(1)}}}"
     if tag == "msubsup":
-        return "%s_{%s}^{%s}" % (_brace(sub(0)), sub(1), sub(2))
+        return f"{_brace(sub(0))}_{{{sub(1)}}}^{{{sub(2)}}}"
     if tag == "mfrac":
-        return r"\frac{%s}{%s}" % (sub(0), sub(1))
+        return rf"\frac{{{sub(0)}}}{{{sub(1)}}}"
     if tag == "msqrt":
-        return r"\sqrt{%s}" % joined()
+        return rf"\sqrt{{{joined()}}}"
     if tag == "mroot":
-        return r"\sqrt[%s]{%s}" % (sub(1), sub(0))
+        return rf"\sqrt[{sub(1)}]{{{sub(0)}}}"
 
     if tag in ("mover", "munder", "munderover"):
         base = sub(0)
         mark = (kids[1].text or "").strip() if len(kids) > 1 else ""
         if tag == "mover" and mark in ACCENTS:
-            return "%s{%s}" % (ACCENTS[mark], base)
+            return f"{ACCENTS[mark]}{{{base}}}"
         if tag == "mover":
-            return r"\overset{%s}{%s}" % (sub(1), _brace(base))
+            return rf"\overset{{{sub(1)}}}{{{_brace(base)}}}"
         if tag == "munder":
-            return r"\underset{%s}{%s}" % (sub(1), _brace(base))
-        return "%s_{%s}^{%s}" % (_brace(base), sub(1), sub(2))
+            return rf"\underset{{{sub(1)}}}{{{_brace(base)}}}"
+        return f"{_brace(base)}_{{{sub(1)}}}^{{{sub(2)}}}"
 
     if tag == "mfenced":
         inner = " , ".join(mathml_to_latex(k) for k in kids)
-        return r"\left%s %s \right%s" % (_delim(elem.get("open", "(")), inner, _delim(elem.get("close", ")")))
+        return r"\left{} {} \right{}".format(_delim(elem.get("open", "(")), inner, _delim(elem.get("close", ")")))
 
     if tag == "mtable":
         rows = [" & ".join(mathml_to_latex(c) for c in r if isinstance(c.tag, str)) for r in kids]
-        return r"\begin{matrix} %s \end{matrix}" % r" \\ ".join(rows)
+        return r"\begin{{matrix}} {} \end{{matrix}}".format(r" \\ ".join(rows))
     if tag in ("mtr", "mtd"):
         return joined()
 
@@ -280,7 +280,7 @@ def _brace(s):
     """Brace a sub-expression unless it is already a single token."""
     if len(s) <= 1 or re.fullmatch(r"\\[A-Za-z]+", s) or re.fullmatch(r"\{.*\}", s):
         return s
-    return "{%s}" % s
+    return f"{{{s}}}"
 
 
 def _wrap_variant(elem, latex):
@@ -289,9 +289,9 @@ def _wrap_variant(elem, latex):
     variant = elem.get("mathvariant", "")
     # Bold is meaningful in these books: it marks vectors.  Keep it.
     if variant == "bold":
-        return r"\mathbf{%s}" % latex
+        return rf"\mathbf{{{latex}}}"
     if variant == "bold-italic":
-        return r"\boldsymbol{%s}" % latex
+        return rf"\boldsymbol{{{latex}}}"
     return latex
 
 
@@ -308,7 +308,7 @@ def math_to_tex(elem, display=False):
     body = re.sub(r"(?<=\d) , (?=\d\d\d\b)", ",", body)
     if not body:
         return ""
-    return ("$$%s$$" % body) if display else ("$%s$" % body)
+    return (f"$${body}$$") if display else (f"${body}$")
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +368,7 @@ def inline_text(elem, skip_tags=()):
             out.append(math_to_tex(child))
         elif name == "link" and not (child.text or "").strip() and len(child) == 0:
             out.append(_link_targets.get(child.get("target-id", ""), "the figure"))
-        elif name in ("media", "image", "iframe"):
-            pass
-        elif name in skip_tags:
+        elif name in ("media", "image", "iframe") or name in skip_tags:
             pass
         else:
             out.append(inline_text(child, skip_tags))
@@ -389,7 +387,7 @@ def _para_text(para):
     if title is not None:
         label = _norm(inline_text(title))
         if label:
-            return "**%s** %s" % (label, body) if body else "**%s**" % label
+            return f"**{label}** {body}" if body else f"**{label}**"
     return body
 
 
@@ -409,7 +407,7 @@ def render_blocks(elem, skip=()):
         elif name == "list":
             bullet = "1." if child.get("list-type") == "enumerated" else "-"
             for item in child.findall(CNX + "item"):
-                parts.append("%s %s" % (bullet, _norm(inline_text(item))))
+                parts.append(f"{bullet} {_norm(inline_text(item))}")
         elif name == "equation":
             math = child.find(MML + "math")
             if math is not None:
@@ -420,11 +418,11 @@ def render_blocks(elem, skip=()):
             cap = child.find(CNX + "caption")
             cap_text = _norm(inline_text(cap)) if cap is not None else ""
             if cap_text:
-                parts.append("[Figure: %s]" % cap_text)
+                parts.append(f"[Figure: {cap_text}]")
         elif name == "table":
             cap = child.find(CNX + "caption")
             cap_text = _norm(inline_text(cap)) if cap is not None else ""
-            parts.append("[Table: %s]" % cap_text if cap_text else "[Table]")
+            parts.append(f"[Table: {cap_text}]" if cap_text else "[Table]")
         elif name == "note":
             inner = render_blocks(child)
             if inner:
@@ -478,7 +476,7 @@ def extract_exercise(elem, n):
         ptitle = problem.find(CNX + "title")
         body = render_blocks(problem, skip=("title",))
         label = _norm(inline_text(ptitle)) if ptitle is not None else ""
-        text = ("**%s** %s" % (label, body)).strip() if label else body
+        text = (f"**{label}** {body}").strip() if label else body
     return {
         "n": n,
         "problem": text,
@@ -543,10 +541,10 @@ def _walk_sections(elem, rec, body_parts, level=2):
         elif kind == "equations":
             text = render_blocks(sec, skip=("title",))
             if text:
-                body_parts.append("%s %s\n%s" % ("#" * level, title or "Key Equations", text))
+                body_parts.append("{} {}\n{}".format("#" * level, title or "Key Equations", text))
         else:
             text = render_blocks(sec, skip=("title",))
-            head = "%s %s" % ("#" * level, title) if title else ""
+            head = "{} {}".format("#" * level, title) if title else ""
             chunk = "\n".join(x for x in (head, text) if x)
             if chunk:
                 body_parts.append(chunk)
@@ -673,8 +671,8 @@ def assign_numbers(book):
                 "moduleId": mid,
                 "chapter": ci,
                 "chapterTitle": chapter["title"],
-                "number": "%d.%d" % (ci, mi),
-                "shard": "ch%02d" % ci,
+                "number": f"{ci}.{mi}",
+                "shard": f"ch{ci:02d}",
             })
     return out
 
@@ -689,7 +687,7 @@ def clone_bundle(repo, cache_dir):
     dest = cache_dir / repo
     if (dest / ".git").exists():
         return dest
-    url = "https://github.com/openstax/%s" % repo
+    url = f"https://github.com/openstax/{repo}"
     subprocess.run(
         ["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", url, str(dest)],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -719,11 +717,13 @@ def bundle_sha(path):
 # with this function; src/textbook_index.test.js pins that against a fixture.
 # ---------------------------------------------------------------------------
 
+# SIM905 is suppressed below: a wrapped word list reads far better than 60
+# quoted literals, and splitting a module-level constant once at import is free.
 STOPWORDS = frozenset("""
 a an and are as at be been but by can for from had has have how in into is it its
 may more most not of on or that the their them then there these they this to was
 were what when where which who will with would you your
-""".split())
+""".split())  # noqa: SIM905
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -830,9 +830,9 @@ def _cap_body(body):
 
 
 def build_book(slug, repo_dir, report=False):
-    col_path = repo_dir / "collections" / ("%s.collection.xml" % slug)
+    col_path = repo_dir / "collections" / (f"{slug}.collection.xml")
     if not col_path.exists():
-        raise SystemExit("no collection file for %r at %s" % (slug, col_path))
+        raise SystemExit(f"no collection file for {slug!r} at {col_path}")
     book = parse_collection(col_path)
     entries = assign_numbers(book)
 
@@ -845,7 +845,7 @@ def build_book(slug, repo_dir, report=False):
     for entry in entries:
         path = repo_dir / "modules" / entry["moduleId"] / "index.cnxml"
         if not path.exists():
-            print("  WARNING: missing module %s" % entry["moduleId"], file=sys.stderr)
+            print("  WARNING: missing module {}".format(entry["moduleId"]), file=sys.stderr)
             continue
         rec = extract_module(path, entry["moduleId"])
         if rec is None:
@@ -885,8 +885,7 @@ def build_book(slug, repo_dir, report=False):
         })
         shards.setdefault(entry["shard"], {})[entry["number"]] = rec
 
-    attribution = ("OpenStax, %s. Access for free at https://openstax.org/details/books/%s"
-                   % (book["title"], slug))
+    attribution = ("OpenStax, {}. Access for free at https://openstax.org/details/books/{}".format(book["title"], slug))
     index = {
         "slug": slug,
         "title": book["title"],
@@ -910,8 +909,8 @@ def build_book(slug, repo_dir, report=False):
         ],
     }
     if report and truncated:
-        print("  %d section(s) capped at %d chars" % (truncated, MAX_CHUNK_CHARS))
-    return index, shards, meta, book["frontmatter"]
+        print(f"  {truncated} section(s) capped at {MAX_CHUNK_CHARS} chars")
+    return index, shards, meta
 
 
 def write_json(path, obj, pretty=False):
@@ -928,7 +927,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--book", action="append", required=True,
-                    help="OpenStax collection slug (repeatable). Known: %s" % ", ".join(sorted(BUNDLES)))
+                    help="OpenStax collection slug (repeatable). Known: {}".format(", ".join(sorted(BUNDLES))))
     ap.add_argument("--output", required=True, help="output directory, e.g. _site/corpus")
     ap.add_argument("--cache-dir", default=".cache/osbooks",
                     help="where bundle clones are kept between runs")
@@ -937,8 +936,7 @@ def main():
 
     unknown = [b for b in args.book if b not in BUNDLES]
     if unknown:
-        raise SystemExit("unknown book slug(s): %s\nknown: %s"
-                         % (", ".join(unknown), ", ".join(sorted(BUNDLES))))
+        raise SystemExit("unknown book slug(s): {}\nknown: {}".format(", ".join(unknown), ", ".join(sorted(BUNDLES))))
 
     out = pathlib.Path(args.output)
     cache = pathlib.Path(args.cache_dir)
@@ -947,17 +945,17 @@ def main():
     books_meta = []
     for slug in args.book:
         repo = BUNDLES[slug]
-        print("[%s] cloning %s…" % (slug, repo))
+        print(f"[{slug}] cloning {repo}…")
         repo_dir = clone_bundle(repo, cache)
-        print("[%s] extracting…" % slug)
-        index, shards, meta, frontmatter = build_book(slug, repo_dir, report=args.report)
+        print(f"[{slug}] extracting…")
+        index, shards, meta = build_book(slug, repo_dir, report=args.report)
         meta["sourceCommit"] = bundle_sha(repo_dir)
-        meta["sourceRepo"] = "openstax/%s" % repo
+        meta["sourceRepo"] = f"openstax/{repo}"
 
         book_dir = out / slug
         idx_bytes = write_json(book_dir / "index.json", index)
         shard_bytes = sum(
-            write_json(book_dir / ("%s.json" % shard), {
+            write_json(book_dir / (f"{shard}.json"), {
                 "slug": slug,
                 "attribution": meta["attribution"],
                 "license": meta["license"],
@@ -966,9 +964,8 @@ def main():
             for shard, sections in sorted(shards.items())
         )
         books_meta.append(meta)
-        print("  %d sections, %d chapters | index %.0f KB, shards %.1f MB"
-              % (len(index["sections"]), len(meta["chapters"]),
-                 idx_bytes / 1024, shard_bytes / 1e6))
+        print(f"  {len(index['sections'])} sections, {len(meta['chapters'])} chapters"
+              f" | index {idx_bytes / 1024:.0f} KB, shards {shard_bytes / 1e6:.1f} MB")
         if args.report:
             import gzip
             raw = (book_dir / "index.json").read_bytes()
@@ -980,7 +977,7 @@ def main():
         "books": books_meta,
     }, pretty=True)
     (out / "LICENSE").write_text(CC_BY_NC_SA, encoding="utf-8")
-    print("Wrote %d book(s) to %s" % (len(books_meta), out))
+    print(f"Wrote {len(books_meta)} book(s) to {out}")
 
 
 if __name__ == "__main__":
