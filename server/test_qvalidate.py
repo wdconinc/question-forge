@@ -300,6 +300,58 @@ class TestNumericalContract(unittest.TestCase):
         self.assert_invalid("between 1", python_code=GOOD_NUMERICAL_PYTHON.replace(
             '"difficulty": 2', '"difficulty": 9'))
 
+    def test_numpy_integer_answer_accepted(self):
+        # rng.integers() returns np.int64, which is not an int subclass — the
+        # concrete isinstance check rejected it while accepting np.float64.
+        state, message = self.check(python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": np.int64(12),'))
+        self.assertEqual(state, "ok", message)
+
+    def test_non_finite_answer_rejected(self):
+        # qti_export.js throws on this, and phys_fmt() formats it as "0".
+        self.assert_invalid("'answer' must be finite", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": float("inf"),'))
+
+    def test_nan_answer_rejected(self):
+        self.assert_invalid("'answer' must be finite", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": float("nan"),'))
+
+    def test_non_finite_tolerance_rejected(self):
+        self.assert_invalid("'tolerance' must be finite",
+                            python_code=GOOD_NUMERICAL_PYTHON.replace(
+                                '"tolerance": resolve_tolerance(v, rel_tol=0.02),',
+                                '"tolerance": float("inf"),'))
+
+    def test_bytes_answer_rejected(self):
+        # float(b"12.3") == 12.3, so a coercion-based check would let this through;
+        # phys_fmt() then dies with "must be real number, not bytes".
+        self.assert_invalid("'answer' must be a number", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": b"12.3",'))
+
+    def test_missing_answer_rejected(self):
+        self.assert_invalid("missing the 'answer' key", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"answer": v,', ''))
+
+    def test_non_string_unit_rejected(self):
+        self.assert_invalid("'unit' must be a string", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"unit": "m/s",', '"unit": 3,'))
+
+    def test_unknown_type_named_clearly(self):
+        # A typo in 'type' used to fall through to the multiple-choice path and
+        # report "missing 'choices'", which says nothing about the real mistake.
+        self.assert_invalid("'type' must be 'multiple_choice' or 'numerical'",
+                            python_code=GOOD_NUMERICAL_PYTHON.replace(
+                                '"type": "numerical",', '"type": "numeric",'))
+
+    def test_multiple_choice_still_validated_without_a_type(self):
+        # Every question that predates numerical entry omits 'type'.
+        self.assertEqual(
+            qvalidate.validate(GOOD_TEMPLATE, GOOD_PYTHON, expected_name="q_good"), ("ok", ""))
+        state, _ = qvalidate.validate(
+            GOOD_TEMPLATE, GOOD_PYTHON.replace('"answer": "a"', '"answer": "f"'),
+            expected_name="q_good")
+        self.assertEqual(state, "invalid")
+
 
 def run_worker(template, python_code, expected_name, env_extra=None, timeout=30):
     """Drive qvalidate.py the way main.py does: a subprocess with a scrubbed env."""

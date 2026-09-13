@@ -29,6 +29,8 @@ from __future__ import annotations
 import builtins
 import contextlib
 import json
+import math
+import numbers
 import os
 import sys
 
@@ -152,6 +154,27 @@ def _blocked_imports():
         builtins.__import__ = real_import
 
 
+def _check_number(value: object, key: str, at: str) -> str:
+    """Return an error message, or "" if *value* is a usable finite number.
+
+    numbers.Real rather than isinstance(value, (int, float)): generators compute
+    with numpy, and np.int64 is not an int subclass, so the concrete check
+    rejected a legitimate rng.integers() answer while accepting np.float64.
+    numbers.Real admits both, and still excludes str/bytes/bytearray/memoryview
+    — none of which survive phys_fmt() when the paper is rendered.
+
+    bool registers as Real via int, so it needs excluding by hand: a True answer
+    is a mistake, not a value.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return f"{at} '{key}' must be a number, got {type(value).__name__}"
+    if not math.isfinite(float(value)):
+        # src/qti_export.js:229-232 throws on a non-finite answer or tolerance, and
+        # phys_fmt() silently formats one as "0". Catch it while it is still fixable.
+        return f"{at} '{key}' must be finite, got {value!r}"
+    return ""
+
+
 def _check_numerical_result(d: dict, seed: int) -> str:
     """Return an error message, or "" if *d* satisfies the numerical-entry contract.
 
@@ -169,13 +192,12 @@ def _check_numerical_result(d: dict, seed: int) -> str:
     if not isinstance(question, str) or not question.strip():
         return f"{at} 'question' must be a non-empty string"
 
-    answer = d["answer"]
-    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
-        return f"{at} 'answer' must be a number, got {type(answer).__name__}"
+    for key in ("answer", "tolerance"):
+        err = _check_number(d[key], key, at)
+        if err:
+            return err
 
     tolerance = d["tolerance"]
-    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
-        return f"{at} 'tolerance' must be a number, got {type(tolerance).__name__}"
     if tolerance < 0:
         return f"{at} 'tolerance' must be non-negative, got {tolerance!r}"
 
@@ -224,8 +246,13 @@ def _check_result(d: object, seed: int) -> str:
     if not isinstance(d, dict):
         return f"{at} generate(rng) must return a dict, got {type(d).__name__}"
 
-    if d.get("type", "multiple_choice") == "numerical":
+    kind = d.get("type", "multiple_choice")
+    if kind == "numerical":
         return _check_numerical_result(d, seed)
+    if kind != "multiple_choice":
+        # Falling through would validate it as multiple choice and report a
+        # baffling "missing 'choices'" for what is really a typo in 'type'.
+        return f"{at} 'type' must be 'multiple_choice' or 'numerical', got {kind!r}"
 
     for key in ("question", "choices", "answer"):
         if key not in d:
