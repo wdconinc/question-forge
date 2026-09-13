@@ -149,6 +149,9 @@ class ChatRequest(BaseModel):
     requested_question_id: str = ""       # ID of a non-active question the AI requested
     requested_question_template: str = "" # Jinja2 template of the requested question
     requested_question_python_code: str = "" # Python code of the requested question
+    textbook_catalog: str = ""    # chapter-level table of contents of the enabled textbooks
+    textbook_context: str = ""    # textbook excerpts the browser retrieved, client-resolved
+    textbook_query: str = ""      # the query/section ids those excerpts came from
 
 # ---------------------------------------------------------------------------
 # LLM tools
@@ -214,6 +217,68 @@ TOOLS = [
                     },
                 },
                 "required": ["question_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_textbook",
+            "description": (
+                "Look up the course textbook and get back full section text: learning "
+                "objectives, the section summary, key equations, worked examples with "
+                "their solutions, and end-of-section problems with answers. "
+                "Call this BEFORE writing a new question so the question matches the "
+                "book's notation, level and problem style. "
+                "Pass `query` with precise terminology (e.g. 'coefficient of kinetic "
+                "friction inclined plane'), or `section_ids` when the catalog already "
+                "tells you which sections you need (e.g. ['6.3','6.4']). Prefer "
+                "`section_ids` when you know them. You get ONE textbook lookup per "
+                "reply, so ask for everything you need in a single call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text search over the textbook index.",
+                    },
+                    "section_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Section numbers from the catalog, e.g. ['6.3'] or "
+                            "['college-physics-2e:6.3']. Overrides `query`."
+                        ),
+                    },
+                    "books": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Restrict to these book slugs, as shown in the catalog.",
+                    },
+                    "chapters": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Restrict the search to these chapter numbers.",
+                    },
+                    "include": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["objectives", "summary", "equations", "examples",
+                                     "problems", "conceptual", "glossary", "body"],
+                        },
+                        "description": (
+                            "Which parts to return. Defaults to objectives, summary, "
+                            "equations, examples and problems. Add 'body' only when you "
+                            "need the full prose."
+                        ),
+                    },
+                    "max_sections": {
+                        "type": "integer",
+                        "description": "How many sections to return, 1-6. Default 3.",
+                    },
+                },
             },
         },
     },
@@ -397,6 +462,30 @@ Current question ID: {qid}
 === QUESTION SET CONTEXT ===
 {req.question_set_prompt.strip()}
 """
+    if req.textbook_catalog.strip():
+        # Deliberately NOT folded into DEFAULT_SYSTEM_PROMPT: that constant is
+        # duplicated verbatim in index.html and the two copies have already
+        # drifted, and the client sends "" when the user has not edited it, so
+        # whichever copy wins depends on whether they ever opened the textarea.
+        # A dynamic block sidesteps the trap entirely.
+        prompt += f"""
+{req.textbook_catalog.strip()}
+
+Grounding rules:
+- Call search_textbook BEFORE authoring a new question, and base the question on
+  what comes back. You get one textbook lookup per reply, so request everything
+  you need at once.
+- Use the book's own symbols, subscripts and unit conventions.
+- Match the difficulty and phrasing of that section's end-of-section problems.
+  Never reproduce a textbook problem verbatim: parametrize the numbers and write
+  the wording yourself.
+- Set the question's `topic` to the section number and title, e.g.
+  "6.3 - Centripetal Force".
+- In your chat reply, say which sections you used, e.g. "Grounded in 6.3, 6.4."
+  Cite ONLY sections whose text you were actually given. If the excerpts do not
+  cover what was asked, say so and search again with different terms rather than
+  inventing textbook content.
+"""
     if req.bank_summary.strip():
         prompt += f"""
 === ALL QUESTIONS IN BANK ===
@@ -419,6 +508,10 @@ Please fix the template and/or python_code so the preview runs without errors.
 
 --- PYTHON GENERATOR ---
 {req.requested_question_python_code or "(empty)"}
+"""
+    if req.textbook_context.strip():
+        prompt += f"""
+{req.textbook_context.strip()}
 """
     return prompt
 
@@ -697,6 +790,13 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
         excluded.add("get_question_bank")
     if req.requested_question_id.strip():
         excluded.add("get_question")
+    if req.textbook_context.strip():
+        excluded.add("search_textbook")
+    elif not req.textbook_catalog.strip():
+        # No catalog means no corpus was built, or the question set has every
+        # book unchecked.  Offering the tool would invite a call the client
+        # cannot answer.
+        excluded.add("search_textbook")
     if excluded:
         gemini_tools = [{
             "functionDeclarations": [
@@ -850,6 +950,23 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     requested_id = args.get("question_id", "")
                     print(f"[chat] AI requested get_question: {requested_id}", flush=True)
                     yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
+                    continue
+                if name == "search_textbook":
+                    if req.textbook_context.strip():
+                        # Excerpts are already in the system prompt; suppress to avoid loops
+                        print("[chat] suppressing search_textbook — textbook_context already provided", flush=True)
+                        continue
+                    print(f"[chat] AI requested search_textbook: {str(args.get('query', ''))[:80]}", flush=True)
+                    yield {"data": json.dumps({
+                        "type": "tool_call",
+                        "tool": "search_textbook",
+                        "query": args.get("query", ""),
+                        "section_ids": args.get("section_ids", []),
+                        "books": args.get("books", []),
+                        "chapters": args.get("chapters", []),
+                        "include": args.get("include", []),
+                        "max_sections": args.get("max_sections", 3),
+                    })}
                     continue
                 payload: dict = {"type": "tool_call", "tool": name}
                 if "template" in args:
