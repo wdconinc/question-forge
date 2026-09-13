@@ -2961,7 +2961,7 @@ exactly these keys:
                            using make_choices (correct value placed at index 0);
                            use 'b'–'e' only when building choices manually
   topic      : str        — brief topic label, e.g. "Ch. 4 — Newton's 2nd Law"
-  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+  difficulty : int        — difficulty level 1 (easy) to 4 (hardest)
 
 The exam framework automatically shuffles answer positions before printing, so
 there is no need to randomize the correct answer position yourself.
@@ -2993,6 +2993,13 @@ The template renders the question text. Variables from the \`params\` dict are
 available as top-level template variables. Use \`{{ variable }}\` for substitution
 and \`{% if %} / {% elif %} / {% else %} / {% endif %}\` for conditionals.
 LaTeX math is written inline as \`$...$\`.
+
+## Runtime limits
+
+Questions run in the browser under Pyodide, which provides numpy, jinja2 and the
+Python standard library only. There is no networking (\`socket\`, \`urllib\`, \`http\`,
+\`ssl\`), no \`subprocess\` and no real threading, so a generator must rely on plain
+arithmetic, numpy and \`math\`.
 
 ## Workflow guidelines
 

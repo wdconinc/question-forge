@@ -24,25 +24,23 @@ sys.path = [
     or not any(seg.startswith("python3.") and seg != f"python{sys.version_info.major}.{sys.version_info.minor}" for seg in p.split("/"))
 ]
 
+import asyncio
 import hmac
 import json
-import math
 import os
-import queue
-import threading
 import time
-import types
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
-import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from jinja2 import Environment as JinjaEnv
-from jinja2 import StrictUndefined
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+import qvalidate
 
 load_dotenv()
 
@@ -58,7 +56,15 @@ GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="QuestionForge AI Runner", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Fire and forget: cold starts are frequent (auto_stop_machines), so the canary
+    # must not add its subprocess latency to the first request.
+    asyncio.create_task(_validation_canary())
+    yield
+
+
+app = FastAPI(title="QuestionForge AI Runner", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +85,7 @@ app.add_middleware(
 
 AUTH_HOLDOFF_SECS: float = float(os.environ.get("AUTH_HOLDOFF_SECS", "10"))
 MAX_FIX_ATTEMPTS: int   = int(os.environ.get("MAX_FIX_ATTEMPTS", "2"))
+VALIDATE_TIMEOUT: float = float(os.environ.get("VALIDATE_TIMEOUT", "10"))
 
 _last_auth_failure: float = 0.0   # monotonic timestamp of most recent failure
 
@@ -334,7 +341,7 @@ exactly these keys:
                            using make_choices (correct value placed at index 0);
                            use 'b'–'e' only when building choices manually
   topic      : str        — brief topic label, e.g. "Ch. 4 — Newton's 2nd Law"
-  difficulty : int        — difficulty level 1 (easy) to 3 (hard)
+  difficulty : int        — difficulty level 1 (easy) to 4 (hardest)
 
 The exam framework automatically shuffles answer positions before printing, so
 there is no need to randomize the correct answer position yourself.
@@ -366,6 +373,13 @@ The template renders the question text. Variables from the `params` dict are
 available as top-level template variables. Use `{{ variable }}` for substitution
 and `{% if %} / {% elif %} / {% else %} / {% endif %}` for conditionals.
 LaTeX math is written inline as `$...$`.
+
+## Runtime limits
+
+Questions run in the browser under Pyodide, which provides numpy, jinja2 and the
+Python standard library only. There is no networking (`socket`, `urllib`, `http`,
+`ssl`), no `subprocess` and no real threading, so a generator must rely on plain
+arithmetic, numpy and `math`.
 
 ## Workflow guidelines
 
@@ -570,113 +584,123 @@ def _to_gemini_contents(system_prompt: str, messages: list[ChatMessage]) -> tupl
 # CPython + numpy and lightweight stand-ins for the questions/ helpers.
 # ---------------------------------------------------------------------------
 
-# Serializes validation runs: each one temporarily registers a "questions"
-# module in sys.modules (so `from questions import ...` resolves inside the
-# exec'd code) whose render_template is monkey-patched to the current
-# template. That's global, mutable state, so concurrent /chat requests must
-# not validate at the same time. The previous entry (if any) is saved and
-# restored around the run rather than blindly popped, and the lock is never
-# held waiting on a hung worker thread (see _validate_question) so one
-# runaway AI-generated infinite loop can't wedge every future validation.
-_VALIDATION_LOCK = threading.Lock()
+_QVALIDATE = str(Path(__file__).resolve().parent / "qvalidate.py")
+
+# One numpy child at a time: a 256 MB machine cannot host several, and validation is
+# never on the latency-critical path (the Gemini stream has already finished).
+_VALIDATE_SEM = asyncio.Semaphore(1)
+
+# Defined in qvalidate so the worker, main.py and the tests cannot drift apart. Importing
+# it is cheap: qvalidate defers numpy and jinja2 until validate() is actually called.
+_SANDBOX_ENV = qvalidate.SANDBOX_ENV
 
 
-def _stub_make_choices(correct_val: float, distractors: list, fmt, min_spacing: float = 0.12) -> list[str]:
-    """Simplified stand-in for questions.make_choices() — just enough to run
-    AI-generated code without crashing. Doesn't enforce uniqueness/spacing;
-    that real logic lives in the browser's questions/__init__.py."""
-    values = ([correct_val, *list(distractors)] + [correct_val] * 4)[:5]
-    return [fmt(v) for v in values]
+async def _validate_question(
+    template: str,
+    python_code: str,
+    expected_name: str | None = None,
+) -> tuple[str, str]:
+    """Run the question in a sandboxed subprocess; return (state, message).
 
+    state is one of:
+      "ok"          — the question satisfies the exam contract
+      "invalid"     — the question is broken; worth asking the model to fix it
+      "unavailable" — this sandbox is broken (missing dependency, crashed child).
+                      Never spend model calls "fixing" a question over this.
 
-def _stub_phys_fmt(v: float, sig: int = 3) -> str:
-    if not math.isfinite(v) or v == 0:
-        return "0"
-    return f"{v:.{sig}g}"
-
-
-def _run_generate(template: str, python_code: str) -> tuple[bool, str]:
-    """Exec python_code, call generate(rng), and confirm it returns a
-    well-formed question dict. Assumes `questions` is already registered in
-    sys.modules by the caller. Runs on the caller's thread — the caller is
-    responsible for the timeout, since a genuine infinite loop in
-    AI-generated code cannot be interrupted from here."""
-    try:
-        namespace: dict = {}
-        exec(compile(python_code, "<ai_generated>", "exec"), namespace)  # noqa: S102
-        generate = namespace.get("generate")
-        if generate is None:
-            return False, "python_code must define a generate(rng) function"
-        result = generate(np.random.default_rng())
-
-        if not isinstance(result, dict):
-            return False, f"generate(rng) must return a dict, got {type(result).__name__}"
-        if not str(result.get("question", "")).strip():
-            return False, "generate(rng) must return a non-empty 'question'"
-        if not str(result.get("topic", "")).strip():
-            return False, "generate(rng) must return a non-empty 'topic'"
-        choices = result.get("choices")
-        if not (isinstance(choices, list) and len(choices) == 5):
-            return False, "generate(rng) must return exactly 5 'choices'"
-        if result.get("answer") not in ("a", "b", "c", "d", "e"):
-            return False, "generate(rng) must return an 'answer' of 'a'-'e'"
-        difficulty = result.get("difficulty")
-        if not (isinstance(difficulty, int) and not isinstance(difficulty, bool) and 1 <= difficulty <= 3):
-            return False, "generate(rng) must return a 'difficulty' int between 1 and 3"
-        return True, ""
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {exc}"
-
-
-def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
-    """Validate that python_code's generate(rng) renders `template` without
-    errors, using render_template (backed by `template`) for any
-    `from questions import ...` the code performs.
-
-    Runs on a daemon thread with a 5-second timeout to guard against infinite
-    loops in AI-generated code. A timeout gives up waiting but the worker
-    thread itself is not killed (Python cannot forcibly stop a running
-    thread) — it is abandoned to finish or loop forever on its own. It must
-    be a daemon thread (not a concurrent.futures.ThreadPoolExecutor one,
-    which the stdlib joins at interpreter exit) so a leaked infinite loop
-    can't also hang server shutdown. The `questions` module patch is restored
-    immediately regardless of the timeout, since any `from questions import
-    ...` in the worker already bound its own reference at exec time and is
-    unaffected by later changes to sys.modules.  Returns (ok, error_message).
+    The work happens in server/qvalidate.py, which mirrors the browser's Pyodide
+    preview (index.html:1893-1916).  It runs out-of-process for three reasons: the
+    parent never imports numpy, a runaway can actually be SIGKILLed, and the child
+    cannot reach GOOGLE_API_KEY / API_TOKEN.  Note this is a pre-filter, not an
+    oracle — the browser preview remains the authority on whether a question runs.
     """
-    jinja_env = JinjaEnv(
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=False,
-        undefined=StrictUndefined,
-    )
-    compiled_template = jinja_env.from_string(template)
-    questions_module = types.ModuleType("questions")
-    questions_module.render_template = (
-        lambda name, params: compiled_template.render(**params).strip()
-    )
-    questions_module.make_choices = _stub_make_choices
-    questions_module.phys_fmt = _stub_phys_fmt
+    job = json.dumps({
+        "template": template,
+        "python_code": python_code,
+        "expected_name": expected_name or "",
+    }).encode()
 
-    with _VALIDATION_LOCK:
-        previous_questions_module = sys.modules.get("questions")
-        sys.modules["questions"] = questions_module
-        result_box: queue.Queue = queue.Queue(maxsize=1)
-        worker = threading.Thread(
-            target=lambda: result_box.put(_run_generate(template, python_code)),
-            daemon=True,
-        )
+    async with _VALIDATE_SEM:
         try:
-            worker.start()
-            worker.join(timeout=5)
-            if worker.is_alive():
-                return False, "Execution timed out (>5 s)"
-            return result_box.get_nowait()
-        finally:
-            if previous_questions_module is None:
-                sys.modules.pop("questions", None)
-            else:
-                sys.modules["questions"] = previous_questions_module
+            proc = await asyncio.create_subprocess_exec(
+                # -I isolates from PYTHONPATH and user site-packages; -B stops bytecode
+                # writes, which the child's RLIMIT_FSIZE=0 would otherwise block.
+                sys.executable, "-I", "-B", _QVALIDATE,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_SANDBOX_ENV,
+            )
+        except OSError as exc:
+            return "unavailable", f"could not start the validation sandbox: {exc}"
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(job), timeout=VALIDATE_TIMEOUT
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return "invalid", (
+                f"the question did not finish running within {VALIDATE_TIMEOUT:.0f} s — "
+                "generate(rng) is probably stuck in an infinite loop"
+            )
+
+    try:
+        result = json.loads(stdout.decode())
+        state = result["state"]
+        message = result.get("message", "")
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError):
+        detail = stderr.decode(errors="replace").strip().splitlines()
+        tail = detail[-1] if detail else "no output"
+        if proc.returncode is not None and proc.returncode < 0:
+            # Killed by a signal — RLIMIT_CPU (SIGXCPU) or our own kill. The question
+            # exhausted its budget, so it is worth asking the model to fix it.
+            return "invalid", (
+                "the question exceeded the sandbox CPU or memory budget — generate(rng) "
+                f"is probably stuck in a loop or allocating without bound ({tail})"
+            )
+        return "unavailable", (
+            f"validation sandbox exited with code {proc.returncode}: {tail}"
+        )
+
+    if state not in ("ok", "invalid", "unavailable"):
+        return "unavailable", f"validation sandbox returned an unknown state {state!r}"
+    return state, message
+
+
+async def _validation_canary() -> None:
+    """Prove the sandbox works at boot, so a broken deploy is one line in `fly logs`.
+
+    Without this, a forgotten COPY in the Dockerfile silently turns every question
+    into a validation failure and burns two Gemini calls apiece — exactly the bug
+    this validator was rewritten to fix.
+    """
+    state, message = await _validate_question(
+        template="{{ n }} apples.",
+        python_code=(
+            "import numpy as np\n"
+            "from questions import render_template\n"
+            "def generate(rng: np.random.Generator) -> dict:\n"
+            "    n = int(rng.integers(2, 9))\n"
+            "    return {\n"
+            '        "question": render_template("canary", {"n": n}),\n'
+            '        "choices": ["a", "b", "c", "d", "e"],\n'
+            '        "answer": "a",\n'
+            '        "topic": "canary",\n'
+            '        "difficulty": 1,\n'
+            "    }\n"
+        ),
+        expected_name="canary",
+    )
+    if state == "ok":
+        print("[validate] environment OK", flush=True)
+    else:
+        print(
+            f"[validate] SANDBOX BROKEN ({state}): {message} — "
+            "AI-authored questions will not be validated",
+            flush=True,
+        )
 
 
 async def _gemini_fix_call(
@@ -699,11 +723,18 @@ async def _gemini_fix_call(
                     f"Validation failed: {error}\n\n"
                     "Please fix the template and python_code so they work together without errors. "
                     "Requirements:\n"
-                    "  • python_code must define a generate(rng: numpy.random.Generator) -> dict function\n"
-                    "  • It must return a dict with 'question', 'choices' (exactly 5), 'answer' ('a'-'e'),\n"
-                    "    'topic', and 'difficulty'\n"
-                    "  • If it calls render_template(question_id, params), every Jinja2 variable in the\n"
-                    "    template must be a key in params, and the template must render without exceptions"
+                    "  • python_code must define generate(rng: numpy.random.Generator) -> dict\n"
+                    "  • It must return question (str), choices (a list of exactly 5 distinct "
+                    "strings), answer (one of 'a'-'e'), topic (str) and difficulty (int 1-4)\n"
+                    "  • Build the question text with render_template(question_id, params), "
+                    "passing this question's own id\n"
+                    "  • Every Jinja2 variable used in the template must be a key in that params "
+                    "dict, and the template must render for any rng seed\n"
+                    "  • Only numpy, jinja2 and the Python standard library are available, "
+                    "and the question runs in the browser under Pyodide: no networking "
+                    "(socket, urllib, http, ssl), no subprocess and no threading\n"
+                    "  • Use plain arithmetic, numpy and the math module — a question "
+                    "generator never needs to reach outside the process"
                 )
             },
         }}]},
@@ -832,14 +863,27 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                 args = fc.get("args", {})
                 if name not in ("update_question", "create_question"):
                     continue
-                template = args.get("template", "")
-                python_code = args.get("python_code", "")
+                # An update_question only has to carry the field it changes; the browser
+                # applies it on top of the editor's current content, so validate that same
+                # pair.  Single-field updates are the common case and used to skip
+                # validation entirely.  A create_question has no editor content to fall
+                # back on — borrowing the open question's template would validate a pair
+                # that never exists — so it must supply both itself.
+                fallback_template = req.template if name == "update_question" else ""
+                fallback_python = req.python_code if name == "update_question" else ""
+                template = args.get("template") or fallback_template
+                python_code = args.get("python_code") or fallback_python
                 if not (template and python_code):
                     continue
+                expected_name = args.get("question_id") or req.question_id or None
 
-                ok, err = _validate_question(template, python_code)
-                if ok:
+                state, err = await _validate_question(template, python_code, expected_name)
+                if state == "ok":
                     print(f"[chat] validation ok for {name}", flush=True)
+                    continue
+                if state == "unavailable":
+                    # Our problem, not the model's — never burn fix calls on it.
+                    print(f"[chat] validation unavailable for {name}: {err}", flush=True)
                     continue
 
                 print(f"[chat] validation failed for {name}: {err[:200]}", flush=True)
@@ -855,18 +899,26 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     if fixed_args is None:
                         print("[chat] fix call returned no function call", flush=True)
                         break
-                    ok, err = _validate_question(
-                        fixed_args.get("template", template),
-                        fixed_args.get("python_code", python_code),
-                    )
-                    args = fixed_args
-                    function_calls[i] = {**fc, "args": fixed_args}
-                    if ok:
+                    # Merge, don't replace: a fix that returns only python_code must not
+                    # drop question_id/title, nor a template repaired on an earlier attempt.
+                    args = {**args, **fixed_args}
+                    template = args.get("template") or fallback_template
+                    python_code = args.get("python_code") or fallback_python
+                    state, err = await _validate_question(template, python_code, expected_name)
+                    if state == "ok":
+                        # Only now is the rewrite worth showing the user.
+                        function_calls[i] = {**fc, "args": args}
                         print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
+                        break
+                    if state == "unavailable":
+                        print(f"[chat] validation unavailable mid-fix: {err}", flush=True)
                         break
                     print(f"[chat] fix attempt {fix_attempt + 1} still failing: {err[:200]}", flush=True)
 
-                if not ok:
+                if state != "ok":
+                    # Emit the model's ORIGINAL tool call untouched — a failed repair is
+                    # usually worse than what it started from.
+                    print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
                     yield {"data": json.dumps({
                         "type": "text",
                         "delta": (
