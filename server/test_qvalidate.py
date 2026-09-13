@@ -73,7 +73,7 @@ class TestDefaultBank(unittest.TestCase):
 
     def test_every_question_validates(self):
         bank = load_bank()
-        self.assertEqual(len(bank["question_order"]), 30)
+        self.assertEqual(len(bank["question_order"]), 31)
         failures = []
         for qid in bank["question_order"]:
             q = bank["questions"][qid]
@@ -214,15 +214,17 @@ class TestContract(unittest.TestCase):
         self.assertEqual(state, "ok", message)
 
     def test_seed_sensitivity(self):
-        # q27_temperature returns 3 choices at seeds 195/207: make_choices cannot build
-        # fallbacks when the correct value is 0 (32 F -> 0 C). A true positive — Render
-        # All raises on it — and the reason validation sweeps several seeds.
+        # q27_temperature used to return 3 choices at seeds 195/207: make_choices could
+        # not build fallbacks when the correct value is 0 (32 F -> 0 C).  The additive
+        # fallback fixed that, so both seeds must now validate — this is the regression
+        # guard for it, and still the reason validation sweeps several seeds.
         bank = load_bank()
         q = bank["questions"]["q27_temperature"]
-        state, message = qvalidate.validate(
-            q["template"], q["python_code"], expected_name="q27_temperature", seeds=(195,))
-        self.assertEqual(state, "invalid", message)
-        self.assertIn("got 3", message)
+        for seed in (195, 207):
+            state, message = qvalidate.validate(
+                q["template"], q["python_code"],
+                expected_name="q27_temperature", seeds=(seed,))
+            self.assertEqual(state, "ok", f"seed {seed}: {message}")
 
 
 def run_worker(template, python_code, expected_name, env_extra=None, timeout=30):

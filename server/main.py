@@ -796,6 +796,20 @@ _FIX_REQUIREMENTS_TEXT = (
 )
 
 
+def _format_validation_error(err: str, limit: int = 400) -> str:
+    """Collapse whitespace and cap length for embedding in a user-facing warning.
+
+    ``err`` carries an arbitrary exception message from AI-generated code, which
+    can be multi-line and unbounded (a deep Jinja2 chain, a repr of a large
+    value).  Left raw it would bloat the SSE payload and stretch the warning row
+    in the browser, so normalise it here rather than at either consumer.
+    """
+    collapsed = " ".join(err.split())
+    if len(collapsed) > limit:
+        collapsed = collapsed[:limit - 1].rstrip() + "…"
+    return collapsed
+
+
 async def _gemini_fix_call(
     model: str,
     system_text: str,
@@ -931,11 +945,16 @@ async def _validate_and_fix_calls(
     function_calls: list[dict],
     req: ChatRequest,
     fix_call: Callable[[str, dict, str], Awaitable[dict | None]],
-) -> AsyncIterator[dict]:
+    validation_warnings: dict[int, str],
+) -> None:
     """Validate update_question/create_question calls and try to auto-fix
     them via `fix_call(name, args, error) -> dict | None`. Mutates
-    `function_calls` in place with any fixed args, and yields a warning SSE
-    event if a call still fails validation after MAX_FIX_ATTEMPTS.
+    `function_calls` in place with any fixed args, and records an entry in
+    `validation_warnings` (keyed by function-call index) for any call that
+    still fails validation after MAX_FIX_ATTEMPTS — the emit loop attaches
+    these to the tool_call payload itself, since a free-floating text delta
+    would be lost (the browser overwrites the assistant bubble with its
+    "Proposing ..." line when the tool_call arrives).
     """
     for i, fc in enumerate(function_calls):
         name = fc.get("name", "")
@@ -992,20 +1011,22 @@ async def _validate_and_fix_calls(
             # Emit the model's ORIGINAL tool call untouched — a failed repair is
             # usually worse than what it started from.
             print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
-            yield {"data": json.dumps({
-                "type": "text",
-                "delta": (
-                    f"\n\n⚠️ *Warning: I could not verify this code runs without errors "
-                    f"after {MAX_FIX_ATTEMPTS} fix attempt(s). "
-                    f"Last error: `{err}`. Please review carefully before accepting.*"
-                ),
-            })}
+            validation_warnings[i] = (
+                f"I could not verify this code runs without errors after "
+                f"{MAX_FIX_ATTEMPTS} fix attempt(s). "
+                f"Last error: {_format_validation_error(err)} "
+                f"— please review carefully before accepting."
+            )
 
 
-async def _emit_tool_calls(function_calls: list[dict], req: ChatRequest) -> AsyncIterator[dict]:
+async def _emit_tool_calls(
+    function_calls: list[dict],
+    req: ChatRequest,
+    validation_warnings: dict[int, str],
+) -> AsyncIterator[dict]:
     """Emit the (possibly fixed) tool calls as SSE tool_call events, handling
     the get_question_bank / get_question round-trip requests."""
-    for fc in function_calls:
+    for i, fc in enumerate(function_calls):
         name = fc.get("name", "")
         args = fc.get("args", {})
         if name == "get_question_bank":
@@ -1052,6 +1073,8 @@ async def _emit_tool_calls(function_calls: list[dict], req: ChatRequest) -> Asyn
             payload["topic"] = args.get("topic", "")
         if "content" in args:
             payload["content"] = args["content"]
+        if i in validation_warnings:
+            payload["validation_warning"] = validation_warnings[i]
         yield {"data": json.dumps(payload)}
 
 
@@ -1141,9 +1164,9 @@ async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
         async def _fix(name: str, args: dict, error: str) -> dict | None:
             return await _gemini_fix_call(model, system_text, contents, name, args, error)
 
-        async for ev in _validate_and_fix_calls(function_calls, req, _fix):
-            yield ev
-        async for ev in _emit_tool_calls(function_calls, req):
+        validation_warnings: dict[int, str] = {}
+        await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+        async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
             yield ev
         yield {"data": json.dumps({"type": "done"})}
 
@@ -1190,9 +1213,9 @@ async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]
     async def _fix(name: str, args: dict, error: str) -> dict | None:
         return await _anthropic_fix_call(client, model, system_text, messages, name, args, error)
 
-    async for ev in _validate_and_fix_calls(function_calls, req, _fix):
-        yield ev
-    async for ev in _emit_tool_calls(function_calls, req):
+    validation_warnings: dict[int, str] = {}
+    await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+    async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
         yield ev
     yield {"data": json.dumps({"type": "done"})}
 
