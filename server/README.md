@@ -30,25 +30,45 @@ The server starts on `http://localhost:8000` by default.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GOOGLE_API_KEY` | ✅ | — | Google AI Studio key ([aistudio.google.com](https://aistudio.google.com)) |
 | `API_TOKEN` | ✅ | — | 8-char alphanumeric token shared with browser users |
-| `LITELLM_MODEL` | ❌ | `gemini-2.5-flash` | Gemini model name; `gemini/` prefix (LiteLLM style) is stripped automatically |
+| `GOOGLE_API_KEY` | one of these | — | Google AI Studio key ([aistudio.google.com](https://aistudio.google.com)) — required to serve Gemini models |
+| `ANTHROPIC_API_KEY` | one of these | — | Anthropic API key ([console.anthropic.com](https://console.anthropic.com)) — required to serve Claude models |
+| `LITELLM_MODEL` | ❌ | `gemini-2.5-flash` | Default model id (see below); a `provider/` prefix, LiteLLM style, is stripped automatically |
+| `ANTHROPIC_MAX_TOKENS` | ❌ | `8192` | `max_tokens` sent on every Claude request (required by the Anthropic API) |
 | `AUTH_HOLDOFF_SECS` | ❌ | `10` | Seconds an IP is locked out after a failed auth attempt (rate-limits brute force) |
 | `PORT` | ❌ | `8000` | Server port |
 
-### Available Gemini models
+At least one of `GOOGLE_API_KEY` / `ANTHROPIC_API_KEY` must be set. Set both to let
+users switch between Gemini and Claude models from the browser's model picker.
+
+### Supported models
+
+`GET /models` reports which of these are actually available (i.e. their provider's
+API key is configured) — the browser's AI Connection popover uses this to populate
+its model dropdown.
 
 ```
-LITELLM_MODEL=gemini-2.5-flash        # fast, free tier available (default)
-LITELLM_MODEL=gemini-2.5-flash-lite   # lighter/cheaper
-LITELLM_MODEL=gemini-2.5-pro          # highest capability
-LITELLM_MODEL=gemini/gemini-2.5-flash # LiteLLM-style prefix also accepted
+# Gemini (needs GOOGLE_API_KEY)
+gemini-2.5-flash        # fast, free tier available (default)
+gemini-2.5-flash-lite   # lighter/cheaper
+gemini-2.5-pro          # highest capability
+
+# Claude (needs ANTHROPIC_API_KEY)
+claude-haiku-4-5        # fastest/cheapest
+claude-sonnet-5         # balanced
+claude-opus-5           # highest capability
 ```
 
-> **Note:** The server calls the Gemini REST API directly via `httpx` (no litellm
-> dependency) to keep the container footprint small. Only Google Gemini models are
-> supported. To use OpenAI/Anthropic/Ollama, run a litellm proxy and point
-> `LITELLM_MODEL` + server URL at it.
+`LITELLM_MODEL` sets the server-wide default (falls back to `gemini-2.5-flash`);
+each browser request may override it with its own `model` field, subject to
+whichever provider key(s) the server has configured.
+
+> **Note:** The server calls the Gemini and Anthropic APIs directly (via `httpx`
+> and the official `anthropic` Python SDK respectively) rather than through a
+> litellm proxy, to keep the container footprint small enough for Fly.io's free
+> tier. Adding another provider means adding its own request/response translation
+> in `main.py` — see `_stream_gemini` / `_stream_anthropic` and the `MODEL_REGISTRY`
+> dict for the pattern to follow (e.g. for OpenAI or a local Ollama model).
 
 ## Question validation
 
@@ -87,7 +107,12 @@ python server/test_qvalidate.py
 ## API
 
 ### `GET /health`
-Returns `{"ok": true, "model": "..."}`. Unauthenticated — use to test connectivity.
+Returns `{"ok": true, "model": "..."}` (the server's default model). Unauthenticated — use to test connectivity.
+
+### `GET /models`
+Returns `{"default": "...", "models": [{"id", "label", "provider"}, ...]}` — only
+models whose provider API key is configured are listed. Unauthenticated, so the
+browser can populate its model picker before a token is entered.
 
 ### `POST /chat`
 Requires `Authorization: Bearer <token>` header.
@@ -96,11 +121,16 @@ Request body:
 ```json
 {
   "messages": [{"role": "user", "content": "..."}],
+  "model": "claude-sonnet-5",
   "template": "current jinja2 template text",
   "python_code": "current python code",
   "question_id": "q01_kinematics"
 }
 ```
+
+`model` is optional — omit it to use the server's `LITELLM_MODEL` default. See
+[Supported models](#supported-models) above for valid ids; `GET /models` returns
+the live list based on which provider API keys are configured.
 
 Streams Server-Sent Events:
 | Event data type | Fields | Description |
@@ -129,8 +159,9 @@ fly apps create question-forge-server   # or any name you like
 # 4. Set secrets (never committed to git)
 fly secrets set \
   API_TOKEN=your8chartoken \
-  LITELLM_MODEL=gemini/gemini-2.5-flash \
-  GOOGLE_API_KEY=your_google_ai_studio_key
+  LITELLM_MODEL=gemini-2.5-flash \
+  GOOGLE_API_KEY=your_google_ai_studio_key \
+  ANTHROPIC_API_KEY=your_anthropic_key   # optional — omit to offer Gemini only
 
 # 5. Deploy
 fly deploy

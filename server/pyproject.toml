@@ -12,6 +12,7 @@ dependencies = [
     # 2.0.2 has no cp313 wheel, so pin the range. Bump with PYODIDE_INDEX in index.html.
     "numpy>=2.0,<2.2",
     "python-dotenv>=1.0",
+    "anthropic>=1.0",
 ]
 
 [tool.uv]

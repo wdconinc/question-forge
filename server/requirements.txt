@@ -8,3 +8,4 @@ jinja2>=3.1
 # Bump together with PYODIDE_INDEX in index.html.
 numpy>=2.0,<2.2
 python-dotenv>=1.0
+anthropic>=1.0

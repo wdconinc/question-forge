@@ -29,10 +29,11 @@ import hmac
 import json
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anthropic
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -44,14 +45,52 @@ import qvalidate
 
 load_dotenv()
 
-API_TOKEN: str    = os.environ.get("API_TOKEN", "")
+API_TOKEN: str      = os.environ.get("API_TOKEN", "")
 GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
-
-# Accept "gemini/gemini-2.5-flash" (LiteLLM style) or bare "gemini-2.5-flash"
-_raw_model = os.environ.get("LITELLM_MODEL", "gemini-2.5-flash")
-GEMINI_MODEL: str = _raw_model.split("/")[-1]
+ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MAX_TOKENS: int = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "8192"))
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+# Maps a model id (as sent by the browser / configured via LITELLM_MODEL) to
+# the provider that serves it. Only models whose provider has a configured
+# API key are advertised to the browser via GET /models, but any model id
+# can still be requested directly (e.g. a newer snapshot not yet listed here)
+# as long as its provider key is set.
+
+MODEL_REGISTRY: dict[str, dict[str, str]] = {
+    "gemini-2.5-flash":      {"provider": "gemini", "label": "Gemini 2.5 Flash"},
+    "gemini-2.5-flash-lite": {"provider": "gemini", "label": "Gemini 2.5 Flash Lite"},
+    "gemini-2.5-pro":        {"provider": "gemini", "label": "Gemini 2.5 Pro"},
+    "claude-opus-5":         {"provider": "anthropic", "label": "Claude Opus 5"},
+    "claude-sonnet-5":       {"provider": "anthropic", "label": "Claude Sonnet 5"},
+    "claude-haiku-4-5":      {"provider": "anthropic", "label": "Claude Haiku 4.5"},
+}
+
+def _normalize_model(raw: str) -> str:
+    """Strip whitespace and an optional "provider/" prefix (LiteLLM style),
+    e.g. " gemini/gemini-2.5-flash " -> "gemini-2.5-flash"."""
+    return raw.strip().split("/")[-1]
+
+
+# Accept "gemini/gemini-2.5-flash" (LiteLLM style) or a bare model id.
+DEFAULT_MODEL: str = _normalize_model(os.environ.get("LITELLM_MODEL", "gemini-2.5-flash"))
+
+
+def _provider_for_model(model: str) -> str:
+    info = MODEL_REGISTRY.get(model)
+    if info:
+        return info["provider"]
+    # Unknown model id (e.g. a newer snapshot not yet in the registry) —
+    # guess the provider from a conventional name prefix.
+    return "anthropic" if model.startswith("claude") else "gemini"
+
+
+def _provider_api_key(provider: str) -> str:
+    return ANTHROPIC_API_KEY if provider == "anthropic" else GOOGLE_API_KEY
 
 # ---------------------------------------------------------------------------
 # App
@@ -137,6 +176,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    model: str = ""          # optional model id override (defaults to DEFAULT_MODEL)
     template: str = ""
     python_code: str = ""
     question_id: str = ""
@@ -544,7 +584,20 @@ Please fix the template and/or python_code so the preview runs without errors.
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "model": GEMINI_MODEL}
+    return {"ok": True, "model": DEFAULT_MODEL}
+
+
+@app.get("/models")
+async def models() -> dict:
+    """List the models this server can serve right now, based on which
+    provider API keys are configured. Unauthenticated, like /health, so the
+    browser can populate its model picker before the user enters a token."""
+    available = [
+        {"id": model_id, "label": info["label"], "provider": info["provider"]}
+        for model_id, info in MODEL_REGISTRY.items()
+        if _provider_api_key(info["provider"])
+    ]
+    return {"default": DEFAULT_MODEL, "models": available}
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +779,23 @@ async def _validation_canary() -> None:
         )
 
 
+_FIX_REQUIREMENTS_TEXT = (
+    "Requirements:\n"
+    "  • python_code must define generate(rng: numpy.random.Generator) -> dict\n"
+    "  • It must return question (str), choices (a list of exactly 5 distinct "
+    "strings), answer (one of 'a'-'e'), topic (str) and difficulty (int 1-4)\n"
+    "  • Build the question text with render_template(question_id, params), "
+    "passing this question's own id\n"
+    "  • Every Jinja2 variable used in the template must be a key in that params "
+    "dict, and the template must render for any rng seed\n"
+    "  • Only numpy, jinja2 and the Python standard library are available, "
+    "and the question runs in the browser under Pyodide: no networking "
+    "(socket, urllib, http, ssl), no subprocess and no threading\n"
+    "  • Use plain arithmetic, numpy and the math module — a question "
+    "generator never needs to reach outside the process"
+)
+
+
 def _format_validation_error(err: str, limit: int = 400) -> str:
     """Collapse whitespace and cap length for embedding in a user-facing warning.
 
@@ -741,6 +811,7 @@ def _format_validation_error(err: str, limit: int = 400) -> str:
 
 
 async def _gemini_fix_call(
+    model: str,
     system_text: str,
     contents: list[dict],
     fc_name: str,
@@ -759,19 +830,7 @@ async def _gemini_fix_call(
                 "error": (
                     f"Validation failed: {error}\n\n"
                     "Please fix the template and python_code so they work together without errors. "
-                    "Requirements:\n"
-                    "  • python_code must define generate(rng: numpy.random.Generator) -> dict\n"
-                    "  • It must return question (str), choices (a list of exactly 5 distinct "
-                    "strings), answer (one of 'a'-'e'), topic (str) and difficulty (int 1-4)\n"
-                    "  • Build the question text with render_template(question_id, params), "
-                    "passing this question's own id\n"
-                    "  • Every Jinja2 variable used in the template must be a key in that params "
-                    "dict, and the template must render for any rng seed\n"
-                    "  • Only numpy, jinja2 and the Python standard library are available, "
-                    "and the question runs in the browser under Pyodide: no networking "
-                    "(socket, urllib, http, ssl), no subprocess and no threading\n"
-                    "  • Use plain arithmetic, numpy and the math module — a question "
-                    "generator never needs to reach outside the process"
+                    f"{_FIX_REQUIREMENTS_TEXT}"
                 )
             },
         }}]},
@@ -788,7 +847,7 @@ async def _gemini_fix_call(
         },
         "generationConfig": {"temperature": 0.2},
     }
-    url = f"{GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
+    url = f"{GEMINI_BASE}/{model}:generateContent"
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(url, params={"key": GOOGLE_API_KEY}, json=body)
@@ -806,22 +865,223 @@ async def _gemini_fix_call(
 
 
 # ---------------------------------------------------------------------------
-# /chat  (SSE streaming)
+# Anthropic (Claude) — tool format conversion + fix call
 # ---------------------------------------------------------------------------
 
-@app.post("/chat")
-async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
-    _check_token(request)
+def _to_anthropic_tools(excluded: set[str] | None = None) -> list[dict]:
+    """Convert the OpenAI-style TOOLS list to Anthropic's tool schema."""
+    excluded = excluded or set()
+    return [
+        {
+            "name": t["function"]["name"],
+            "description": t["function"]["description"],
+            "input_schema": t["function"].get("parameters", {}),
+        }
+        for t in TOOLS
+        if t["function"]["name"] not in excluded
+    ]
 
-    if not GOOGLE_API_KEY:
-        raise HTTPException(status_code=500, detail="GOOGLE_API_KEY not configured on server.")
 
-    system_text, contents = _to_gemini_contents(_system_prompt(req), req.messages)
+def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict]:
+    return [
+        {"role": "assistant" if m.role == "assistant" else "user", "content": m.content}
+        for m in messages
+    ]
 
-    # Build the tools list; exclude get_question_bank when bank data is already
-    # in the system prompt (prevents the AI from calling it in a loop).
-    # Similarly, exclude get_question when that question's data is already provided.
-    gemini_tools = _to_gemini_tools()
+
+async def _anthropic_fix_call(
+    client: anthropic.AsyncAnthropic,
+    model: str,
+    system_text: str,
+    messages: list[dict],
+    fc_name: str,
+    fc_args: dict,
+    error: str,
+) -> dict | None:
+    """Non-streaming Claude call that feeds a validation error back as a
+    tool_result and forces the model to return a corrected tool call.
+    Returns the new input dict, or None if Claude didn't return a tool call.
+    """
+    fix_messages = messages + [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "fix_call", "name": fc_name, "input": fc_args},
+        ]},
+        {"role": "user", "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "fix_call",
+                "is_error": True,
+                "content": (
+                    f"Validation failed: {error}\n\n"
+                    "Please fix the template and python_code so they work together without errors. "
+                    f"{_FIX_REQUIREMENTS_TEXT}"
+                ),
+            },
+        ]},
+    ]
+    try:
+        resp = await client.messages.create(
+            model=model,
+            max_tokens=ANTHROPIC_MAX_TOKENS,
+            system=system_text,
+            messages=fix_messages,
+            tools=_to_anthropic_tools(),
+            tool_choice={"type": "tool", "name": fc_name},
+            temperature=0.2,
+        )
+        for block in resp.content:
+            if block.type == "tool_use" and block.name == fc_name:
+                return block.input
+    except Exception as exc:  # noqa: BLE001
+        print(f"[chat] anthropic fix call exception: {exc}", flush=True)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared post-processing: validate/auto-fix tool calls, emit SSE events
+# ---------------------------------------------------------------------------
+
+async def _validate_and_fix_calls(
+    function_calls: list[dict],
+    req: ChatRequest,
+    fix_call: Callable[[str, dict, str], Awaitable[dict | None]],
+    validation_warnings: dict[int, str],
+) -> None:
+    """Validate update_question/create_question calls and try to auto-fix
+    them via `fix_call(name, args, error) -> dict | None`. Mutates
+    `function_calls` in place with any fixed args, and records an entry in
+    `validation_warnings` (keyed by function-call index) for any call that
+    still fails validation after MAX_FIX_ATTEMPTS — the emit loop attaches
+    these to the tool_call payload itself, since a free-floating text delta
+    would be lost (the browser overwrites the assistant bubble with its
+    "Proposing ..." line when the tool_call arrives).
+    """
+    for i, fc in enumerate(function_calls):
+        name = fc.get("name", "")
+        args = fc.get("args", {})
+        if name not in ("update_question", "create_question"):
+            continue
+        # An update_question only has to carry the field it changes; the browser
+        # applies it on top of the editor's current content, so validate that same
+        # pair.  Single-field updates are the common case and used to skip
+        # validation entirely.  A create_question has no editor content to fall
+        # back on — borrowing the open question's template would validate a pair
+        # that never exists — so it must supply both itself.
+        fallback_template = req.template if name == "update_question" else ""
+        fallback_python = req.python_code if name == "update_question" else ""
+        template = args.get("template") or fallback_template
+        python_code = args.get("python_code") or fallback_python
+        if not (template and python_code):
+            continue
+        expected_name = args.get("question_id") or req.question_id or None
+
+        state, err = await _validate_question(template, python_code, expected_name)
+        if state == "ok":
+            print(f"[chat] validation ok for {name}", flush=True)
+            continue
+        if state == "unavailable":
+            # Our problem, not the model's — never burn fix calls on it.
+            print(f"[chat] validation unavailable for {name}: {err}", flush=True)
+            continue
+
+        print(f"[chat] validation failed for {name}: {err[:200]}", flush=True)
+        for fix_attempt in range(MAX_FIX_ATTEMPTS):
+            print(f"[chat] fix attempt {fix_attempt + 1}/{MAX_FIX_ATTEMPTS}", flush=True)
+            fixed_args = await fix_call(name, args, err)
+            if fixed_args is None:
+                print("[chat] fix call returned no function call", flush=True)
+                break
+            # Merge, don't replace: a fix that returns only python_code must not
+            # drop question_id/title, nor a template repaired on an earlier attempt.
+            args = {**args, **fixed_args}
+            template = args.get("template") or fallback_template
+            python_code = args.get("python_code") or fallback_python
+            state, err = await _validate_question(template, python_code, expected_name)
+            if state == "ok":
+                # Only now is the rewrite worth showing the user.
+                function_calls[i] = {**fc, "args": args}
+                print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
+                break
+            if state == "unavailable":
+                print(f"[chat] validation unavailable mid-fix: {err}", flush=True)
+                break
+            print(f"[chat] fix attempt {fix_attempt + 1} still failing: {err[:200]}", flush=True)
+
+        if state != "ok":
+            # Emit the model's ORIGINAL tool call untouched — a failed repair is
+            # usually worse than what it started from.
+            print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
+            validation_warnings[i] = (
+                f"I could not verify this code runs without errors after "
+                f"{MAX_FIX_ATTEMPTS} fix attempt(s). "
+                f"Last error: {_format_validation_error(err)} "
+                f"— please review carefully before accepting."
+            )
+
+
+async def _emit_tool_calls(
+    function_calls: list[dict],
+    req: ChatRequest,
+    validation_warnings: dict[int, str],
+) -> AsyncIterator[dict]:
+    """Emit the (possibly fixed) tool calls as SSE tool_call events, handling
+    the get_question_bank / get_question round-trip requests."""
+    for i, fc in enumerate(function_calls):
+        name = fc.get("name", "")
+        args = fc.get("args", {})
+        if name == "get_question_bank":
+            if req.bank_summary.strip():
+                print("[chat] suppressing get_question_bank — bank_summary already provided", flush=True)
+                continue
+            print("[chat] AI requested get_question_bank", flush=True)
+            yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
+            continue
+        if name == "get_question":
+            if req.requested_question_id.strip():
+                print("[chat] suppressing get_question — requested_question already provided", flush=True)
+                continue
+            requested_id = args.get("question_id", "")
+            print(f"[chat] AI requested get_question: {requested_id}", flush=True)
+            yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
+            continue
+        if name == "search_textbook":
+            if req.textbook_context.strip():
+                print("[chat] suppressing search_textbook — textbook_context already provided", flush=True)
+                continue
+            print(f"[chat] AI requested search_textbook: {str(args.get('query', ''))[:80]}", flush=True)
+            yield {"data": json.dumps({
+                "type": "tool_call",
+                "tool": "search_textbook",
+                "query": args.get("query", ""),
+                "section_ids": args.get("section_ids", []),
+                "books": args.get("books", []),
+                "chapters": args.get("chapters", []),
+                "include": args.get("include", []),
+                "max_sections": args.get("max_sections", 3),
+            })}
+            continue
+        payload: dict = {"type": "tool_call", "tool": name}
+        if "template" in args:
+            payload["template"] = args["template"]
+        if "python_code" in args:
+            payload["python_code"] = args["python_code"]
+        if "question_id" in args:
+            payload["question_id"] = args["question_id"]
+        if "title" in args:
+            payload["title"] = args["title"]
+        if "topic" in args:
+            payload["topic"] = args.get("topic", "")
+        if "content" in args:
+            payload["content"] = args["content"]
+        if i in validation_warnings:
+            payload["validation_warning"] = validation_warnings[i]
+        yield {"data": json.dumps(payload)}
+
+
+def _excluded_tools(req: ChatRequest) -> set[str]:
+    """Tools to drop from the request — suppresses get_question_bank /
+    get_question once their data is already inlined in the system prompt,
+    which otherwise invites the model into a redundant call loop."""
     excluded: set[str] = set()
     if req.bank_summary.strip():
         excluded.add("get_question_bank")
@@ -834,6 +1094,14 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
         # book unchecked.  Offering the tool would invite a call the client
         # cannot answer.
         excluded.add("search_textbook")
+    return excluded
+
+
+async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
+    system_text, contents = _to_gemini_contents(_system_prompt(req), req.messages)
+
+    excluded = _excluded_tools(req)
+    gemini_tools = _to_gemini_tools()
     if excluded:
         gemini_tools = [{
             "functionDeclarations": [
@@ -850,190 +1118,126 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
         "generationConfig": {"temperature": 0.7},
     }
 
-    url = f"{GEMINI_BASE}/{GEMINI_MODEL}:streamGenerateContent"
+    url = f"{GEMINI_BASE}/{model}:streamGenerateContent"
     params = {"key": GOOGLE_API_KEY, "alt": "sse"}
 
-    print(f"[chat] model={GEMINI_MODEL} msgs={len(req.messages)}", flush=True)
+    print(f"[chat] model={model} (gemini) msgs={len(req.messages)}", flush=True)
 
-    async def _stream() -> AsyncIterator[dict]:
-        try:
-            async with (
-                httpx.AsyncClient(timeout=120) as client,
-                client.stream("POST", url, params=params, json=body) as resp,
-            ):
-                print(f"[chat] gemini status={resp.status_code}", flush=True)
-                if resp.status_code != 200:
-                    err = await resp.aread()
-                    err_text = err.decode()
-                    print(f"[chat] gemini error: {err_text[:500]}", flush=True)
-                    yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
-                    return
+    try:
+        async with (
+            httpx.AsyncClient(timeout=120) as client,
+            client.stream("POST", url, params=params, json=body) as resp,
+        ):
+            print(f"[chat] gemini status={resp.status_code}", flush=True)
+            if resp.status_code != 200:
+                err = await resp.aread()
+                err_text = err.decode()
+                print(f"[chat] gemini error: {err_text[:500]}", flush=True)
+                yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
+                return
 
-                function_calls: list[dict] = []
-                n_text = 0
+            function_calls: list[dict] = []
+            n_text = 0
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    raw = line[5:].strip()
-                    if not raw or raw == "[DONE]":
-                        continue
-                    try:
-                        chunk = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-
-                    for candidate in chunk.get("candidates", []):
-                        parts = candidate.get("content", {}).get("parts", [])
-                        for part in parts:
-                            if part.get("text"):
-                                n_text += 1
-                                yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
-                            if "functionCall" in part:
-                                function_calls.append(part["functionCall"])
-
-            print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
-
-            # Validate and auto-fix update_question / create_question calls.
-            # Unfixable failures are recorded here keyed by function-call index
-            # and attached to the tool_call payload in the emit loop below, so
-            # the browser can render them on the proposal card itself.  A
-            # free-floating text delta would be lost: the browser overwrites the
-            # assistant bubble with its "Proposing ..." line when the tool_call
-            # arrives.
-            validation_warnings: dict[int, str] = {}
-            for i, fc in enumerate(function_calls):
-                name = fc.get("name", "")
-                args = fc.get("args", {})
-                if name not in ("update_question", "create_question"):
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
                     continue
-                # An update_question only has to carry the field it changes; the browser
-                # applies it on top of the editor's current content, so validate that same
-                # pair.  Single-field updates are the common case and used to skip
-                # validation entirely.  A create_question has no editor content to fall
-                # back on — borrowing the open question's template would validate a pair
-                # that never exists — so it must supply both itself.
-                fallback_template = req.template if name == "update_question" else ""
-                fallback_python = req.python_code if name == "update_question" else ""
-                template = args.get("template") or fallback_template
-                python_code = args.get("python_code") or fallback_python
-                if not (template and python_code):
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
                     continue
-                expected_name = args.get("question_id") or req.question_id or None
-
-                state, err = await _validate_question(template, python_code, expected_name)
-                if state == "ok":
-                    print(f"[chat] validation ok for {name}", flush=True)
-                    continue
-                if state == "unavailable":
-                    # Our problem, not the model's — never burn fix calls on it.
-                    print(f"[chat] validation unavailable for {name}: {err}", flush=True)
+                try:
+                    chunk = json.loads(raw)
+                except json.JSONDecodeError:
                     continue
 
-                print(f"[chat] validation failed for {name}: {err[:200]}", flush=True)
-                for fix_attempt in range(MAX_FIX_ATTEMPTS):
-                    print(f"[chat] fix attempt {fix_attempt + 1}/{MAX_FIX_ATTEMPTS}", flush=True)
-                    fixed_args = await _gemini_fix_call(
-                        system_text=system_text,
-                        contents=contents,
-                        fc_name=name,
-                        fc_args=args,
-                        error=err,
-                    )
-                    if fixed_args is None:
-                        print("[chat] fix call returned no function call", flush=True)
-                        break
-                    # Merge, don't replace: a fix that returns only python_code must not
-                    # drop question_id/title, nor a template repaired on an earlier attempt.
-                    args = {**args, **fixed_args}
-                    template = args.get("template") or fallback_template
-                    python_code = args.get("python_code") or fallback_python
-                    state, err = await _validate_question(template, python_code, expected_name)
-                    if state == "ok":
-                        # Only now is the rewrite worth showing the user.
-                        function_calls[i] = {**fc, "args": args}
-                        print(f"[chat] fixed on attempt {fix_attempt + 1}", flush=True)
-                        break
-                    if state == "unavailable":
-                        print(f"[chat] validation unavailable mid-fix: {err}", flush=True)
-                        break
-                    print(f"[chat] fix attempt {fix_attempt + 1} still failing: {err[:200]}", flush=True)
+                for candidate in chunk.get("candidates", []):
+                    parts = candidate.get("content", {}).get("parts", [])
+                    for part in parts:
+                        if part.get("text"):
+                            n_text += 1
+                            yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
+                        if "functionCall" in part:
+                            function_calls.append(part["functionCall"])
 
-                if state != "ok":
-                    # Emit the model's ORIGINAL tool call untouched — a failed repair is
-                    # usually worse than what it started from.
-                    print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
-                    validation_warnings[i] = (
-                        f"I could not verify this code runs without errors after "
-                        f"{MAX_FIX_ATTEMPTS} fix attempt(s). "
-                        f"Last error: {_format_validation_error(err)} "
-                        f"— please review carefully before accepting."
-                    )
+        print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
 
-            # Emit (possibly fixed) tool calls
-            for i, fc in enumerate(function_calls):
-                name = fc.get("name", "")
-                args = fc.get("args", {})
-                if name == "get_question_bank":
-                    if req.bank_summary.strip():
-                        # Bank is already in the system prompt; suppress to avoid loops
-                        print("[chat] suppressing get_question_bank — bank_summary already provided", flush=True)
-                        continue
-                    # Signal the browser to provide the bank summary and retry
-                    print("[chat] AI requested get_question_bank", flush=True)
-                    yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
-                    continue
-                if name == "get_question":
-                    if req.requested_question_id.strip():
-                        # Question is already in the system prompt; suppress to avoid loops
-                        print("[chat] suppressing get_question — requested_question already provided", flush=True)
-                        continue
-                    # Signal the browser to provide the question data and retry
-                    requested_id = args.get("question_id", "")
-                    print(f"[chat] AI requested get_question: {requested_id}", flush=True)
-                    yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
-                    continue
-                if name == "search_textbook":
-                    if req.textbook_context.strip():
-                        # Excerpts are already in the system prompt; suppress to avoid loops
-                        print("[chat] suppressing search_textbook — textbook_context already provided", flush=True)
-                        continue
-                    print(f"[chat] AI requested search_textbook: {str(args.get('query', ''))[:80]}", flush=True)
-                    yield {"data": json.dumps({
-                        "type": "tool_call",
-                        "tool": "search_textbook",
-                        "query": args.get("query", ""),
-                        "section_ids": args.get("section_ids", []),
-                        "books": args.get("books", []),
-                        "chapters": args.get("chapters", []),
-                        "include": args.get("include", []),
-                        "max_sections": args.get("max_sections", 3),
-                    })}
-                    continue
-                payload: dict = {"type": "tool_call", "tool": name}
-                if "template" in args:
-                    payload["template"] = args["template"]
-                if "python_code" in args:
-                    payload["python_code"] = args["python_code"]
-                if "question_id" in args:
-                    payload["question_id"] = args["question_id"]
-                if "title" in args:
-                    payload["title"] = args["title"]
-                if "topic" in args:
-                    payload["topic"] = args.get("topic", "")
-                if "content" in args:
-                    payload["content"] = args["content"]
-                if i in validation_warnings:
-                    payload["validation_warning"] = validation_warnings[i]
-                yield {"data": json.dumps(payload)}
+        async def _fix(name: str, args: dict, error: str) -> dict | None:
+            return await _gemini_fix_call(model, system_text, contents, name, args, error)
 
-            yield {"data": json.dumps({"type": "done"})}
+        validation_warnings: dict[int, str] = {}
+        await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+        async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
+            yield ev
+        yield {"data": json.dumps({"type": "done"})}
 
-        except Exception as exc:  # noqa: BLE001
-            print(f"[chat] exception: {exc}", flush=True)
-            yield {"data": json.dumps({"type": "error", "message": str(exc)})}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[chat] exception: {exc}", flush=True)
+        yield {"data": json.dumps({"type": "error", "message": str(exc)})}
 
-    return EventSourceResponse(_stream(), ping=0)
+
+async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]:
+    system_text = _system_prompt(req)
+    messages = _to_anthropic_messages(req.messages)
+    tools = _to_anthropic_tools(_excluded_tools(req))
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+    print(f"[chat] model={model} (anthropic) msgs={len(req.messages)}", flush=True)
+
+    try:
+        async with client.messages.stream(
+            model=model,
+            max_tokens=ANTHROPIC_MAX_TOKENS,
+            system=system_text,
+            messages=messages,
+            tools=tools,
+        ) as stream:
+            async for text in stream.text_stream:
+                yield {"data": json.dumps({"type": "text", "delta": text})}
+            final = await stream.get_final_message()
+    except anthropic.APIStatusError as exc:
+        print(f"[chat] anthropic error: {exc}", flush=True)
+        yield {"data": json.dumps({"type": "error", "message": f"Claude {exc.status_code}: {str(exc.message)[:300]}"})}
+        return
+    except Exception as exc:  # noqa: BLE001
+        print(f"[chat] exception: {exc}", flush=True)
+        yield {"data": json.dumps({"type": "error", "message": str(exc)})}
+        return
+
+    function_calls = [
+        {"name": block.name, "args": block.input}
+        for block in final.content
+        if block.type == "tool_use"
+    ]
+    print(f"[chat] done: tool_calls={len(function_calls)}", flush=True)
+
+    async def _fix(name: str, args: dict, error: str) -> dict | None:
+        return await _anthropic_fix_call(client, model, system_text, messages, name, args, error)
+
+    validation_warnings: dict[int, str] = {}
+    await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+    async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
+        yield ev
+    yield {"data": json.dumps({"type": "done"})}
+
+
+# ---------------------------------------------------------------------------
+# /chat  (SSE streaming)
+# ---------------------------------------------------------------------------
+
+@app.post("/chat")
+async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
+    _check_token(request)
+
+    model = _normalize_model(req.model) or DEFAULT_MODEL
+    provider = _provider_for_model(model)
+
+    if provider == "anthropic" and not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not configured on server.")
+    if provider == "gemini" and not GOOGLE_API_KEY:
+        raise HTTPException(status_code=400, detail="GOOGLE_API_KEY not configured on server.")
+
+    stream_fn = _stream_anthropic if provider == "anthropic" else _stream_gemini
+    return EventSourceResponse(stream_fn(model, req), ping=0)
 
 
 
