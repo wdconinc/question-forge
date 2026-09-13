@@ -3522,10 +3522,12 @@ function renderDiffHtml(diff, ctx = 3) {
 // Server-side validation warning row shown inside a proposal card.  It stays
 // visible for as long as the card does — i.e. until the user accepts or rejects
 // the change it is meant to inform.
+// role="status" makes the row a polite live region; the glyph is decorative on
+// its own, so it carries an explicit label rather than being read as punctuation.
 function warningHtml(warning) {
   if (!warning) return "";
-  return `<div class="ai-diff-warning">` +
-         `<span class="ai-diff-warning-icon">⚠</span>` +
+  return `<div class="ai-diff-warning" role="status">` +
+         `<span class="ai-diff-warning-icon" role="img" aria-label="Warning">⚠</span>` +
          `<span>${escHtml(warning)}</span></div>`;
 }
 

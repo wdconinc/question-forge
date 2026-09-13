@@ -496,6 +496,20 @@ def _validate_question(template: str, python_code: str) -> tuple[bool, str]:
             return False, "Execution timed out (>5 s)"
 
 
+def _format_validation_error(err: str, limit: int = 400) -> str:
+    """Collapse whitespace and cap length for embedding in a user-facing warning.
+
+    ``err`` carries an arbitrary exception message from AI-generated code, which
+    can be multi-line and unbounded (a deep Jinja2 chain, a repr of a large
+    value).  Left raw it would bloat the SSE payload and stretch the warning row
+    in the browser, so normalise it here rather than at either consumer.
+    """
+    collapsed = " ".join(err.split())
+    if len(collapsed) > limit:
+        collapsed = collapsed[:limit - 1].rstrip() + "…"
+    return collapsed
+
+
 async def _gemini_fix_call(
     system_text: str,
     contents: list[dict],
@@ -684,7 +698,8 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                 if not ok:
                     validation_warnings[i] = (
                         f"I could not verify this code runs without errors after "
-                        f"{MAX_FIX_ATTEMPTS} fix attempt(s). Last error: {err} "
+                        f"{MAX_FIX_ATTEMPTS} fix attempt(s). "
+                        f"Last error: {_format_validation_error(err)} "
                         f"— please review carefully before accepting."
                     )
 
