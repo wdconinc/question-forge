@@ -29,7 +29,8 @@ export const DEFAULT_BANK = {
     "q27_temperature",
     "q28_calorimetry",
     "q29_heat_transfer",
-    "q30_thermo_laws"
+    "q30_thermo_laws",
+    "q34_numerical_final_velocity"
   ],
   "questions": {
     "q01_units": {
@@ -271,6 +272,15 @@ export const DEFAULT_BANK = {
       "difficulty": 2,
       "python_code": "\"\"\"\nQ30 — First Law of Thermodynamics (Ch. 15)\n\nTwo sub-scenarios:\n  (A) Given Q and W, find ΔU = Q − W.\n  (B) Given ΔU and W, find Q = ΔU + W.\n\"\"\"\n\nimport numpy as np\nfrom questions import make_choices, render_template\n\n\ndef generate(rng: np.random.Generator) -> dict:\n    return _first_law(rng)\n\n\n# ---------------------------------------------------------------------------\n# First Law of Thermodynamics\n# ---------------------------------------------------------------------------\n\ndef _first_law(rng: np.random.Generator) -> dict:\n    # Sub-scenario: find ΔU, or find Q\n    sub = int(rng.integers(0, 2))\n\n    Q_vals = np.arange(200, 2001, 100)\n    W_vals = np.arange(100, 1501, 100)\n\n    Q = float(rng.choice(Q_vals))\n\n    # Ensure W < Q so ΔU > 0 (physically straightforward)\n    valid_W = W_vals[W_vals < Q]\n    if len(valid_W) == 0:\n        valid_W = np.array([Q * 0.5])\n    W = float(rng.choice(valid_W))\n\n    dU = Q - W   # correct\n\n    if sub == 0:\n        # Ask for ΔU\n        d1 = Q + W\n        d2 = Q - 2 * W\n        d3 = W - Q\n        d4 = Q * W / 1000.0  # nonsense product (scaled to look plausible)\n\n        params = {\"sub\": 0, \"Q\": f\"{Q:.4g}\", \"W\": f\"{W:.4g}\", \"dU\": None}\n        question = render_template(\"q30_thermo_laws\", params)\n        fmt = lambda v: f\"${v:.4g}\\\\,\\\\text{{J}}$\"\n        choices = make_choices(dU, [d1, d2, d3, d4], fmt)\n        topic_variant = \"Ch. 15 — First Law of Thermodynamics\"\n\n    else:\n        # Ask for Q given ΔU and W\n        # Re-label: present dU and W, ask for Q = dU + W\n        d1 = dU - W      # sign error\n        d2 = dU * W      # product (nonsense)\n        d3 = dU + 2 * W  # factor-of-2 error\n        d4 = W - dU      # subtracted wrong way\n\n        params = {\"sub\": 1, \"Q\": None, \"W\": f\"{W:.4g}\", \"dU\": f\"{dU:.4g}\"}\n        question = render_template(\"q30_thermo_laws\", params)\n        fmt = lambda v: f\"${v:.4g}\\\\,\\\\text{{J}}$\"\n        choices = make_choices(Q, [d1, d2, d3, d4], fmt)\n        topic_variant = \"Ch. 15 — First Law of Thermodynamics\"\n\n    return {\n        \"question\": question,\n        \"choices\": choices,\n        \"answer\": \"a\",\n        \"topic\": topic_variant,\n        \"difficulty\": 3,\n    }\n",
       "template": "{% if sub == 0 %}\nA gas absorbs $Q = {{ Q }}\\,\\text{J}$ of heat and does $W = {{ W }}\\,\\text{J}$ of work on its surroundings. What is the change in internal energy $\\Delta U$ of the gas?\n{% else %}\nThe internal energy of a gas increases by $\\Delta U = {{ dU }}\\,\\text{J}$ while the gas does $W = {{ W }}\\,\\text{J}$ of work on its surroundings. How much heat $Q$ did the gas absorb?\n{% endif %}\n"
+    },
+    "q34_numerical_final_velocity": {
+      "id": "q34_numerical_final_velocity",
+      "title": "q34_numerical_final_velocity",
+      "topic": "",
+      "difficulty": 1,
+      "type": "numerical",
+      "python_code": "\"\"\"\nQ34 — Numerical Entry: Final Velocity Under Constant Acceleration (Ch. 2)\n\nAn object starts at initial speed v0 and accelerates uniformly at rate a for\ntime t; students compute the final speed v = v0 + a*t as a typed numeric\nanswer (no lettered choices) with a small relative tolerance.\n\"\"\"\n\nimport numpy as np\nfrom questions import resolve_tolerance, render_template\n\n\ndef generate(rng: np.random.Generator) -> dict:\n    v0_vals = [0.0, 2.0, 5.0, 8.0, 10.0, 12.0]   # m/s\n    a_vals  = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]      # m/s²\n    t_vals  = [3.0, 4.0, 5.0, 6.0, 8.0, 10.0]     # s\n\n    v0 = float(rng.choice(v0_vals))\n    a  = float(rng.choice(a_vals))\n    t  = float(rng.choice(t_vals))\n\n    v = v0 + a * t\n\n    subjects = [\n        (\"A car\", \"its\"),\n        (\"A cyclist\", \"their\"),\n        (\"A train\", \"its\"),\n        (\"A sled\", \"its\"),\n    ]\n    subj, pronoun = subjects[int(rng.integers(0, len(subjects)))]\n\n    params = {\n        \"subject\": subj,\n        \"v0\": f\"{v0:.1f}\",\n        \"a\": f\"{a:.1f}\",\n        \"t\": f\"{t:.1f}\",\n        \"pronoun\": pronoun,\n    }\n    question = render_template(\"q34_numerical_final_velocity\", params)\n\n    return {\n        \"type\": \"numerical\",\n        \"question\": question,\n        \"answer\": v,\n        \"tolerance\": resolve_tolerance(v, rel_tol=0.02),\n        \"unit\": \"m/s\",\n        \"topic\": \"Ch. 2 — Constant-Acceleration Kinematics (Final Velocity)\",\n        \"difficulty\": 1,\n    }\n",
+      "template": "{{ subject }} starts at {{ v0 }} m/s and accelerates uniformly at {{ a }} m/s² for {{ t }} s. What is {{ pronoun }} final speed? (Enter your answer in m/s.)\n"
     }
   }
 };
