@@ -324,6 +324,18 @@ class TestNumericalContract(unittest.TestCase):
                             python_code=NUMERICAL_PYTHON.replace(
                                 '"unit": "m/s",', '"unit": "m/s", "sig_figs": 0,'))
 
+    def test_bytes_answer_rejected(self):
+        # float(b"12.3") == 12.3, so a coercion-based check let this through;
+        # phys_fmt() then dies at render time with "must be real number, not bytes".
+        self.assert_invalid("'answer' must be a number", python_code=NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": b"12.3",'))
+
+    def test_bytearray_tolerance_rejected(self):
+        self.assert_invalid("'tolerance' must be a number",
+                            python_code=NUMERICAL_PYTHON.replace(
+                                '"tolerance": resolve_tolerance(v, rel_tol=0.02),',
+                                '"tolerance": bytearray(b"0.5"),'))
+
     def test_numpy_scalars_accepted(self):
         # Generators compute with numpy; np.int64 is not an int subclass, and
         # rejecting it would be a false failure.

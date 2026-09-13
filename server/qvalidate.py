@@ -30,6 +30,7 @@ import builtins
 import contextlib
 import json
 import math
+import numbers
 import os
 import sys
 
@@ -156,18 +157,20 @@ def _blocked_imports():
 def _check_number(value: object, key: str, at: str) -> str:
     """Return an error message, or "" if *value* is a usable finite number.
 
-    Coerces rather than isinstance-checking, matching the int(difficulty) idiom
-    below: generators compute with numpy, and np.int64 is not an int subclass.
-    bool and str are rejected up front — float() accepts both, but neither
-    survives phys_fmt() when the paper is rendered.
+    Tests numbers.Real rather than isinstance(value, (int, float)): generators
+    compute with numpy, and np.int64 is not an int subclass, so a concrete
+    isinstance check would reject valid questions.  It is also not float(value)
+    in a try — float() accepts str, bytes, bytearray and memoryview, none of
+    which reach phys_fmt() alive ("TypeError: must be real number, not bytes")
+    when the paper is rendered.  numbers.Real admits every numeric type a
+    generator can plausibly produce and excludes the rest by construction.
+
+    bool still needs saying: it registers as Real via int, but a True answer is
+    a mistake, not a value.
     """
-    if isinstance(value, (bool, str)):
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
         return f"{at} '{key}' must be a number, got {type(value).__name__}"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return f"{at} '{key}' must be a number, got {type(value).__name__}"
-    if not math.isfinite(number):
+    if not math.isfinite(float(value)):
         return f"{at} '{key}' must be finite, got {value!r}"
     return ""
 
