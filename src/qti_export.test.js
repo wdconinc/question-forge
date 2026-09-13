@@ -158,6 +158,13 @@ test("buildItemNode (numerical) rejects a non-finite answer or tolerance", async
   );
 });
 
+test("buildItemNode (numerical) rejects a negative tolerance", async () => {
+  const question = { qid: "q_negative_tolerance", type: "numerical", question: "x", answer: 10, tolerance: -0.5 };
+  await assert.rejects(() =>
+    buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+});
+
 test("buildObjectBankXml wraps every item directly under one <objectbank> (no <section> nesting)", async () => {
   const q1 = await buildItemNode({ qid: "q01", question: "A", choices: ["1", "2", "3", "4", "5"], answer: "a" }, {
     latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [],

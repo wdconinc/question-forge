@@ -781,14 +781,26 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
 
 
 def resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None) -> float:
-    """Return an absolute tolerance for a numerical-entry question's answer.
+    """Return a non-negative absolute tolerance for a numerical-entry question's answer.
 
     Exactly one of `abs_tol` (already an absolute ± value) or `rel_tol`
     (a fraction of `value`, e.g. 0.02 for ±2%) must be given.
     """
     if (abs_tol is None) == (rel_tol is None):
         raise ValueError("resolve_tolerance requires exactly one of abs_tol or rel_tol")
-    return abs_tol if abs_tol is not None else abs(value) * rel_tol
+    if not math.isfinite(value):
+        raise ValueError(f"resolve_tolerance: value must be finite, got {value!r}")
+    if abs_tol is not None:
+        if not math.isfinite(abs_tol):
+            raise ValueError(f"resolve_tolerance: abs_tol must be finite, got {abs_tol!r}")
+        tolerance = abs_tol
+    else:
+        if not math.isfinite(rel_tol):
+            raise ValueError(f"resolve_tolerance: rel_tol must be finite, got {rel_tol!r}")
+        tolerance = abs(value) * rel_tol
+    if tolerance < 0:
+        raise ValueError(f"resolve_tolerance: resolved tolerance must be non-negative, got {tolerance!r}")
+    return tolerance
 
 </script>
 
@@ -1986,6 +1998,7 @@ if _d.get("type", "multiple_choice") == "numerical":
         "answer": float(_d["answer"]),
         "tolerance": float(_d.get("tolerance", 0)),
         "unit": _d.get("unit", ""),
+        "sig_figs": int(_d.get("sig_figs", 3)),
         "topic": _d.get("topic", ""),
         "difficulty": int(_d.get("difficulty", 2)),
     }
@@ -2022,9 +2035,11 @@ function renderPreview(data) {
   if (data.type === "numerical") {
     const html = marked.parse(data.question + "\n\n");
     const unitSuffix = data.unit ? ` ${escHtml(data.unit)}` : "";
-    // Round to 4 significant figures for display only \u2014 avoids float noise
-    // like resolve_tolerance(12.3, rel_tol=0.02) === 0.24600000000000002.
-    const roundSig = n => (Number.isFinite(n) ? Number(n.toPrecision(4)) : n);
+    // Round to the question's own sig_figs (default 3, matching phys_fmt's
+    // default) for display only \u2014 avoids float noise like
+    // resolve_tolerance(12.3, rel_tol=0.02) === 0.24600000000000002.
+    const sigFigs = Number.isInteger(data.sig_figs) && data.sig_figs > 0 ? data.sig_figs : 3;
+    const roundSig = n => (Number.isFinite(n) ? Number(n.toPrecision(sigFigs)) : n);
     const answerText = `${roundSig(data.answer)}${unitSuffix} (\u00b1 ${roundSig(data.tolerance)}${unitSuffix})`;
     document.getElementById("preview-content").innerHTML =
       `<div>${html}</div>` +
@@ -2385,6 +2400,19 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
   const pop = document.getElementById("qti-paper-popover");
   pop.innerHTML = "";
 
+  // Declared before the button loop so both a button click and an outside
+  // click can remove it — a button click alone (without this) would leave
+  // the listener dangling on `document` with nothing left to ever remove it.
+  const closeOnOutsideClick = e => {
+    if (!pop.contains(e.target) && e.target !== triggerEl) {
+      closePopover();
+    }
+  };
+  const closePopover = () => {
+    pop.classList.remove("open");
+    document.removeEventListener("click", closeOnOutsideClick);
+  };
+
   const label = document.createElement("div");
   label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
   label.textContent = "Export which paper?";
@@ -2401,7 +2429,7 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
     btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
     btn.textContent = `Paper ${paper}`;
     btn.addEventListener("click", () => {
-      pop.classList.remove("open");
+      closePopover();
       onChosen(paper);
     });
     row.appendChild(btn);
@@ -2427,15 +2455,6 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
     pop.style.left = margin + "px";
   }
 
-  const closeOnOutsideClick = e => {
-    if (!pop.contains(e.target) && e.target !== triggerEl) {
-      pop.classList.remove("open");
-      document.removeEventListener("click", closeOnOutsideClick);
-    }
-  };
-  // A paper button's own click handler can close the popover (by picking a
-  // paper) before this fires. Registering the listener anyway would leave it
-  // dangling on `document` with nothing left to ever remove it.
   setTimeout(() => {
     if (!pop.classList.contains("open")) return;
     document.addEventListener("click", closeOnOutsideClick);
@@ -2447,6 +2466,19 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
 function openTypeChoicePopover(triggerEl, onChosen) {
   const pop = document.getElementById("qti-paper-popover");
   pop.innerHTML = "";
+
+  // Declared before the button loop so both a button click and an outside
+  // click can remove it — a button click alone (without this) would leave
+  // the listener dangling on `document` with nothing left to ever remove it.
+  const closeOnOutsideClick = e => {
+    if (!pop.contains(e.target) && e.target !== triggerEl) {
+      closePopover();
+    }
+  };
+  const closePopover = () => {
+    pop.classList.remove("open");
+    document.removeEventListener("click", closeOnOutsideClick);
+  };
 
   const label = document.createElement("div");
   label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
@@ -2461,7 +2493,7 @@ function openTypeChoicePopover(triggerEl, onChosen) {
     btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
     btn.textContent = label_;
     btn.addEventListener("click", () => {
-      pop.classList.remove("open");
+      closePopover();
       onChosen(value);
     });
     row.appendChild(btn);
@@ -2484,12 +2516,6 @@ function openTypeChoicePopover(triggerEl, onChosen) {
     pop.style.left = margin + "px";
   }
 
-  const closeOnOutsideClick = e => {
-    if (!pop.contains(e.target) && e.target !== triggerEl) {
-      pop.classList.remove("open");
-      document.removeEventListener("click", closeOnOutsideClick);
-    }
-  };
   setTimeout(() => {
     if (!pop.classList.contains("open")) return;
     document.addEventListener("click", closeOnOutsideClick);

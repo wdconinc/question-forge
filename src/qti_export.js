@@ -231,6 +231,9 @@ async function buildNumericalItemNode(question, opts) {
   if (!Number.isFinite(tolerance)) {
     throw new Error(`buildItemNode: question ${question.qid} has invalid tolerance "${question.tolerance}"`);
   }
+  if (tolerance < 0) {
+    throw new Error(`buildItemNode: question ${question.qid} has a negative tolerance "${question.tolerance}"`);
+  }
 
   const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures });
 
