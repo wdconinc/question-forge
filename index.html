@@ -300,6 +300,12 @@
     .diff-line.del  { background: #ffeef0; color: #82071e; }
     .diff-line.ctx  { color: #636c76; }
     .diff-line.hunk { background: #dff0ff; color: #0550ae; font-style: italic; font-family: inherit; }
+    .ai-diff-warning {
+      background: #fff8c5; color: #7d4e00; padding: 5px 10px; font-size: 11px;
+      line-height: 1.45; font-family: inherit; border-top: 1px solid #d4a72c;
+      display: flex; gap: 6px; align-items: flex-start;
+    }
+    .ai-diff-warning .ai-diff-warning-icon { flex-shrink: 0; }
     .ai-diff-actions {
       padding: 6px 8px; display: flex; gap: 8px; background: #f6f8fa;
       border-top: 1px solid #d0d7de;
@@ -3791,7 +3797,7 @@ async function doSendChat() {
                   topic: evt.topic || "",
                   template: evt.template || "",
                   python_code: evt.python_code || "",
-                });
+                }, evt.validation_warning);
                 createCount++;
                 aEl.innerHTML = createCount > 1
                   ? `<span style="color:#2e7d32">✓ Proposing ${createCount} new questions — see cards below ↓</span>`
@@ -3808,7 +3814,7 @@ async function doSendChat() {
                 aEl.innerHTML = `<span style="color:#e65100">⚠ Unknown tool call: ${escHtml(evt.tool)}</span>`;
               }
               if (changes.length) {
-                showDiffCard(changes);
+                showDiffCard(changes, evt.validation_warning);
                 const toolLabel = changes.map(c => c.label).join(" + ");
                 aEl.innerHTML = `<span style="color:#2e7d32">✓ Proposing ${escHtml(toolLabel)} update — see diff card below ↓</span>`;
               }
@@ -3997,8 +4003,21 @@ function renderDiffHtml(diff, ctx = 3) {
   return html;
 }
 
-function showDiffCard(changes) {
+// Server-side validation warning row shown inside a proposal card.  It stays
+// visible for as long as the card does — i.e. until the user accepts or rejects
+// the change it is meant to inform.
+// role="status" makes the row a polite live region; the glyph is decorative on
+// its own, so it carries an explicit label rather than being read as punctuation.
+function warningHtml(warning) {
+  if (!warning) return "";
+  return `<div class="ai-diff-warning" role="status">` +
+         `<span class="ai-diff-warning-icon" role="img" aria-label="Warning">⚠</span>` +
+         `<span>${escHtml(warning)}</span></div>`;
+}
+
+function showDiffCard(changes, warning) {
   // changes: [{tool, label, oldContent, newContent}, ...]
+  // warning: optional server-side validation warning to show above the buttons
   const title = changes.length > 1
     ? "Proposed question update (template + Python)"
     : `Proposed ${changes[0].label} update`;
@@ -4016,6 +4035,7 @@ function showDiffCard(changes) {
   card.innerHTML = `
     <div class="ai-diff-card-hdr">📝 ${escHtml(title)}</div>
     <div class="ai-diff-body">${bodyHtml}</div>
+    ${warningHtml(warning)}
     <div class="ai-diff-actions">
       <button class="btn-diff-accept">✓ Accept</button>
       <button class="btn-diff-reject">✗ Reject</button>
@@ -4059,8 +4079,9 @@ function showDiffCard(changes) {
   return card;
 }
 
-function showCreateCard(q) {
+function showCreateCard(q, warning) {
   // q: {question_id, title, topic, template, python_code}
+  // warning: optional server-side validation warning to show above the buttons
   // Show all-new content as green additions (diff from empty)
   let bodyHtml = "";
   for (const [label, content] of [["Jinja2 template", q.template], ["Python generator", q.python_code]]) {
@@ -4074,6 +4095,7 @@ function showCreateCard(q) {
   card.innerHTML = `
     <div class="ai-diff-card-hdr create">✨ New question: ${escHtml(q.title)} (${escHtml(q.question_id)})</div>
     <div class="ai-diff-body">${bodyHtml}</div>
+    ${warningHtml(warning)}
     <div class="ai-diff-actions">
       <button class="btn-diff-accept">✓ Accept &amp; Add</button>
       <button class="btn-diff-reject">✗ Reject</button>

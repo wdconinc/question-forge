@@ -726,6 +726,20 @@ async def _validation_canary() -> None:
         )
 
 
+def _format_validation_error(err: str, limit: int = 400) -> str:
+    """Collapse whitespace and cap length for embedding in a user-facing warning.
+
+    ``err`` carries an arbitrary exception message from AI-generated code, which
+    can be multi-line and unbounded (a deep Jinja2 chain, a repr of a large
+    value).  Left raw it would bloat the SSE payload and stretch the warning row
+    in the browser, so normalise it here rather than at either consumer.
+    """
+    collapsed = " ".join(err.split())
+    if len(collapsed) > limit:
+        collapsed = collapsed[:limit - 1].rstrip() + "…"
+    return collapsed
+
+
 async def _gemini_fix_call(
     system_text: str,
     contents: list[dict],
@@ -880,7 +894,14 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
 
             print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
 
-            # Validate and auto-fix update_question / create_question calls
+            # Validate and auto-fix update_question / create_question calls.
+            # Unfixable failures are recorded here keyed by function-call index
+            # and attached to the tool_call payload in the emit loop below, so
+            # the browser can render them on the proposal card itself.  A
+            # free-floating text delta would be lost: the browser overwrites the
+            # assistant bubble with its "Proposing ..." line when the tool_call
+            # arrives.
+            validation_warnings: dict[int, str] = {}
             for i, fc in enumerate(function_calls):
                 name = fc.get("name", "")
                 args = fc.get("args", {})
@@ -942,17 +963,15 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     # Emit the model's ORIGINAL tool call untouched — a failed repair is
                     # usually worse than what it started from.
                     print(f"[chat] giving up on {name}; emitting the original tool call", flush=True)
-                    yield {"data": json.dumps({
-                        "type": "text",
-                        "delta": (
-                            f"\n\n⚠️ *Warning: I could not verify this code runs without errors "
-                            f"after {MAX_FIX_ATTEMPTS} fix attempt(s). "
-                            f"Last error: `{err}`. Please review carefully before accepting.*"
-                        ),
-                    })}
+                    validation_warnings[i] = (
+                        f"I could not verify this code runs without errors after "
+                        f"{MAX_FIX_ATTEMPTS} fix attempt(s). "
+                        f"Last error: {_format_validation_error(err)} "
+                        f"— please review carefully before accepting."
+                    )
 
             # Emit (possibly fixed) tool calls
-            for fc in function_calls:
+            for i, fc in enumerate(function_calls):
                 name = fc.get("name", "")
                 args = fc.get("args", {})
                 if name == "get_question_bank":
@@ -1004,6 +1023,8 @@ async def chat(req: ChatRequest, request: Request) -> EventSourceResponse:
                     payload["topic"] = args.get("topic", "")
                 if "content" in args:
                     payload["content"] = args["content"]
+                if i in validation_warnings:
+                    payload["validation_warning"] = validation_warnings[i]
                 yield {"data": json.dumps(payload)}
 
             yield {"data": json.dumps({"type": "done"})}
