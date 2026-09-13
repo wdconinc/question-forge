@@ -29,6 +29,7 @@ from __future__ import annotations
 import builtins
 import contextlib
 import json
+import math
 import os
 import sys
 
@@ -152,23 +153,30 @@ def _blocked_imports():
         builtins.__import__ = real_import
 
 
-def _check_result(d: object, seed: int) -> str:
-    """Return an error message, or "" if *d* satisfies the contract.
+def _check_number(value: object, key: str, at: str) -> str:
+    """Return an error message, or "" if *value* is a usable finite number.
 
-    question/choices/answer are required — index.html:1910-1912 subscripts them
-    directly.  topic/difficulty are optional; index.html:1913-1914 defaults them.
+    Coerces rather than isinstance-checking, matching the int(difficulty) idiom
+    below: generators compute with numpy, and np.int64 is not an int subclass.
+    bool and str are rejected up front — float() accepts both, but neither
+    survives phys_fmt() when the paper is rendered.
     """
-    at = f"(seed {seed})"
-    if not isinstance(d, dict):
-        return f"{at} generate(rng) must return a dict, got {type(d).__name__}"
+    if isinstance(value, (bool, str)):
+        return f"{at} '{key}' must be a number, got {type(value).__name__}"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{at} '{key}' must be a number, got {type(value).__name__}"
+    if not math.isfinite(number):
+        return f"{at} '{key}' must be finite, got {value!r}"
+    return ""
 
-    for key in ("question", "choices", "answer"):
+
+def _check_multiple_choice(d: dict, at: str) -> str:
+    """choices/answer are required — index.html:1910-1912 subscripts them directly."""
+    for key in ("choices", "answer"):
         if key not in d:
             return f"{at} the dict returned by generate(rng) is missing the '{key}' key"
-
-    question = d["question"]
-    if not isinstance(question, str) or not question.strip():
-        return f"{at} 'question' must be a non-empty string"
 
     choices = d["choices"]
     if isinstance(choices, str) or not isinstance(choices, (list, tuple)):
@@ -189,6 +197,47 @@ def _check_result(d: object, seed: int) -> str:
     if not isinstance(answer, str) or answer not in LETTERS:
         return f"{at} 'answer' must be one of 'a'-'e', got {answer!r}"
 
+    return ""
+
+
+def _check_numerical(d: dict, at: str) -> str:
+    """answer/tolerance are required and numeric — python/exam_core.py:60 formats
+    both with phys_fmt(), and src/qti_export.js:227-236 turns them into the
+    answer range, rejecting a non-finite answer or a non-finite/negative
+    tolerance.  unit and sig_figs are optional per DEFAULT_SYSTEM_PROMPT.
+    """
+    for key in ("answer", "tolerance"):
+        if key not in d:
+            return (
+                f"{at} a numerical question (type='numerical') is missing the "
+                f"'{key}' key"
+            )
+        err = _check_number(d[key], key, at)
+        if err:
+            return err
+
+    if float(d["tolerance"]) < 0:
+        return (
+            f"{at} 'tolerance' must be non-negative, got {d['tolerance']!r} — "
+            "resolve_tolerance() returns an absolute ± value"
+        )
+
+    if "unit" in d and not isinstance(d["unit"], str):
+        return f"{at} 'unit' must be a string, got {type(d['unit']).__name__}"
+
+    if "sig_figs" in d:
+        try:
+            sig_figs = int(d["sig_figs"])
+        except (TypeError, ValueError):
+            return f"{at} 'sig_figs' must be a positive integer, got {d['sig_figs']!r}"
+        if sig_figs < 1:
+            return f"{at} 'sig_figs' must be a positive integer, got {sig_figs}"
+
+    return ""
+
+
+def _check_common(d: dict, at: str) -> str:
+    """topic/difficulty are optional for both types; index.html:1913-1914 defaults them."""
     if "topic" in d and not isinstance(d["topic"], str):
         return f"{at} 'topic' must be a string, got {type(d['topic']).__name__}"
 
@@ -201,6 +250,37 @@ def _check_result(d: object, seed: int) -> str:
             return f"{at} 'difficulty' must be between 1 (easy) and 4 (hardest), got {difficulty}"
 
     return ""
+
+
+def _check_result(d: object, seed: int) -> str:
+    """Return an error message, or "" if *d* satisfies the contract.
+
+    'question' is required whatever the type — index.html:1910 and :988 subscript
+    it directly.  'type' selects the rest of the contract and defaults to multiple
+    choice exactly as index.html:987 does, so the many questions that predate
+    numerical entry stay valid without declaring a type.
+    """
+    at = f"(seed {seed})"
+    if not isinstance(d, dict):
+        return f"{at} generate(rng) must return a dict, got {type(d).__name__}"
+
+    if "question" not in d:
+        return f"{at} the dict returned by generate(rng) is missing the 'question' key"
+    question = d["question"]
+    if not isinstance(question, str) or not question.strip():
+        return f"{at} 'question' must be a non-empty string"
+
+    kind = d.get("type", "multiple_choice")
+    if kind == "numerical":
+        err = _check_numerical(d, at)
+    elif kind == "multiple_choice":
+        err = _check_multiple_choice(d, at)
+    else:
+        # The browser treats any non-"numerical" type as multiple choice, which
+        # turns a typo into a baffling "missing 'choices'".  Say what went wrong.
+        return f"{at} 'type' must be 'multiple_choice' or 'numerical', got {kind!r}"
+
+    return err or _check_common(d, at)
 
 
 def validate(

@@ -244,6 +244,113 @@ def run_worker(template, python_code, expected_name, env_extra=None, timeout=30)
     return result["state"], result.get("message", "")
 
 
+NUMERICAL_TEMPLATE = "A sled starts at {{ v0 }} m/s and accelerates at {{ a }} m/s^2.\n"
+NUMERICAL_PYTHON = '''
+import numpy as np
+from questions import resolve_tolerance, render_template
+
+def generate(rng: np.random.Generator) -> dict:
+    v0 = float(rng.choice([0.0, 2.0, 5.0]))
+    a = float(rng.choice([1.0, 2.0, 3.0]))
+    v = v0 + a * 4.0
+    params = {"v0": f"{v0:.1f}", "a": f"{a:.1f}"}
+    return {
+        "type": "numerical",
+        "question": render_template("q_num", params),
+        "answer": v,
+        "tolerance": resolve_tolerance(v, rel_tol=0.02),
+        "unit": "m/s",
+        "topic": "Kinematics",
+        "difficulty": 1,
+    }
+'''
+
+
+class TestNumericalContract(unittest.TestCase):
+    """Numerical entry is a second contract, selected by type == "numerical".
+
+    The shape is the one DEFAULT_SYSTEM_PROMPT documents to the model and
+    src/qti_export.js:149 documents to its caller.
+    """
+
+    def check(self, template=NUMERICAL_TEMPLATE, python_code=NUMERICAL_PYTHON,
+              expected_name="q_num", **kw):
+        return qvalidate.validate(template, python_code, expected_name=expected_name, **kw)
+
+    def assert_invalid(self, needle, **kw):
+        state, message = self.check(**kw)
+        self.assertEqual(state, "invalid", f"got {state}: {message}")
+        self.assertIn(needle, message)
+        return message
+
+    def test_baseline_is_ok(self):
+        self.assertEqual(self.check(), ("ok", ""))
+
+    def test_numerical_needs_no_choices(self):
+        # The whole point: the multiple-choice contract must not be applied here.
+        state, message = self.check()
+        self.assertEqual(state, "ok", message)
+        self.assertNotIn("choices", message)
+
+    def test_missing_answer_rejected(self):
+        self.assert_invalid("missing the 'answer' key", python_code=NUMERICAL_PYTHON.replace(
+            '"answer": v,', ''))
+
+    def test_missing_tolerance_rejected(self):
+        self.assert_invalid("missing the 'tolerance' key", python_code=NUMERICAL_PYTHON.replace(
+            '"tolerance": resolve_tolerance(v, rel_tol=0.02),', ''))
+
+    def test_non_numeric_answer_rejected(self):
+        self.assert_invalid("'answer' must be a number", python_code=NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": "twelve",'))
+
+    def test_non_finite_answer_rejected(self):
+        # qti_export.js rejects this outright; catch it before the user accepts.
+        self.assert_invalid("'answer' must be finite", python_code=NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": float("inf"),'))
+
+    def test_negative_tolerance_rejected(self):
+        self.assert_invalid("'tolerance' must be non-negative",
+                            python_code=NUMERICAL_PYTHON.replace(
+                                '"tolerance": resolve_tolerance(v, rel_tol=0.02),',
+                                '"tolerance": -1.0,'))
+
+    def test_non_string_unit_rejected(self):
+        self.assert_invalid("'unit' must be a string", python_code=NUMERICAL_PYTHON.replace(
+            '"unit": "m/s",', '"unit": 3,'))
+
+    def test_bad_sig_figs_rejected(self):
+        self.assert_invalid("'sig_figs' must be a positive integer",
+                            python_code=NUMERICAL_PYTHON.replace(
+                                '"unit": "m/s",', '"unit": "m/s", "sig_figs": 0,'))
+
+    def test_numpy_scalars_accepted(self):
+        # Generators compute with numpy; np.int64 is not an int subclass, and
+        # rejecting it would be a false failure.
+        state, message = self.check(python_code=NUMERICAL_PYTHON.replace(
+            '"answer": v,', '"answer": np.int64(12),').replace(
+            '"tolerance": resolve_tolerance(v, rel_tol=0.02),', '"tolerance": np.float64(0.5),'))
+        self.assertEqual(state, "ok", message)
+
+    def test_unknown_type_named_clearly(self):
+        # Without this the browser's "anything not numerical is MC" default turns
+        # a typo into a baffling "missing 'choices'".
+        self.assert_invalid("'type' must be 'multiple_choice' or 'numerical'",
+                            python_code=NUMERICAL_PYTHON.replace(
+                                '"type": "numerical",', '"type": "numeric",'))
+
+    def test_multiple_choice_still_validated_without_a_type(self):
+        # Every pre-existing bank question omits 'type' and must stay on the MC path.
+        state, message = qvalidate.validate(GOOD_TEMPLATE, GOOD_PYTHON, expected_name="q_good")
+        self.assertEqual(state, "ok", message)
+        state, message = qvalidate.validate(
+            GOOD_TEMPLATE,
+            GOOD_PYTHON.replace('"answer": "a"', '"answer": "f"'),
+            expected_name="q_good")
+        self.assertEqual(state, "invalid", message)
+
+
+
 class TestWorker(unittest.TestCase):
     def test_worker_round_trip(self):
         self.assertEqual(run_worker(GOOD_TEMPLATE, GOOD_PYTHON, "q_good"), ("ok", ""))
