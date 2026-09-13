@@ -138,9 +138,20 @@ def apply_answer_positions(data_list: list, positions: list, rng: np.random.Gene
 def render_question(q_num: int, data: dict) -> tuple[str, str]:
     """Render a single question as a Markdown block.
 
-    Returns (markdown_block, correct_letter).  Choices must already be in their
-    final order (call apply_answer_positions beforehand).
+    Returns (markdown_block, correct_answer_display).  Choices must already be
+    in their final order (call apply_answer_positions beforehand). Numerical
+    questions are not affected by apply_answer_positions and are rendered
+    with a blank answer line instead of lettered choices.
     """
+    if data.get("type", "multiple_choice") == "numerical":
+        from questions import phys_fmt
+        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        unit_suffix = f" {data['unit']}" if data.get("unit") else ""
+        ans_str = (
+            f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
+            f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
+        )
+        return "\n".join(lines), ans_str
     lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
@@ -247,8 +258,11 @@ def main():
     order_A = local_shuffle_order(len(modules), rng_A)
     data_A = [data_A_orig[i] for i in order_A]
     # Assign balanced answer positions (6× each letter), shuffle distractors
-    pos_rng_A = np.random.default_rng([args.seed_A, 0xF1A1A])
-    apply_answer_positions(data_A, assign_answer_positions(len(data_A), pos_rng_A), pos_rng_A)
+    # (numerical questions are excluded — see mc_data below)
+    mc_data_A = [d for d in data_A if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_A:
+        pos_rng_A = np.random.default_rng([args.seed_A, 0xF1A1A])
+        apply_answer_positions(mc_data_A, assign_answer_positions(len(mc_data_A), pos_rng_A), pos_rng_A)
 
     # Generate questions for Paper B (different parameters)
     print(f"Generating Paper B (seed={args.seed_B})...")
@@ -256,8 +270,10 @@ def main():
     data_B_orig = [mod.generate(rng_B) for mod in modules]
     order_B = local_shuffle_order(len(modules), rng_B)
     data_B = [data_B_orig[i] for i in order_B]
-    pos_rng_B = np.random.default_rng([args.seed_B, 0xF1A1A])
-    apply_answer_positions(data_B, assign_answer_positions(len(data_B), pos_rng_B), pos_rng_B)
+    mc_data_B = [d for d in data_B if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_B:
+        pos_rng_B = np.random.default_rng([args.seed_B, 0xF1A1A])
+        apply_answer_positions(mc_data_B, assign_answer_positions(len(mc_data_B), pos_rng_B), pos_rng_B)
 
     # Generate questions for Paper C (deferred exam)
     print(f"Generating Paper C (seed={args.seed_C})...")
@@ -265,8 +281,10 @@ def main():
     data_C_orig = [mod.generate(rng_C) for mod in modules]
     order_C = local_shuffle_order(len(modules), rng_C)
     data_C = [data_C_orig[i] for i in order_C]
-    pos_rng_C = np.random.default_rng([args.seed_C, 0xF1A1A])
-    apply_answer_positions(data_C, assign_answer_positions(len(data_C), pos_rng_C), pos_rng_C)
+    mc_data_C = [d for d in data_C if d.get("type", "multiple_choice") != "numerical"]
+    if mc_data_C:
+        pos_rng_C = np.random.default_rng([args.seed_C, 0xF1A1A])
+        apply_answer_positions(mc_data_C, assign_answer_positions(len(mc_data_C), pos_rng_C), pos_rng_C)
 
     # Render
     exam_A_md, answers_A = render_exam("A", data_A)

@@ -23,6 +23,7 @@ jobs:
           cache: "npm"
       - run: npm ci
       - run: npm run lint
+      - run: npm test
 
   lint-server:
     name: Ruff (server)
@@ -33,4 +34,22 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check server/main.py
+      # origin/main added scripts/; this branch added server/. Lint both.
+      - run: ruff check server/ scripts/
+
+      # The Fly build context is server/, so the Dockerfile cannot COPY the canonical
+      # helpers from python/. server/questions.py is a verbatim copy; fail loudly if the
+      # two drift, or the validation sandbox stops matching what the browser runs.
+      - name: questions.py matches python/__init__.py
+        run: cmp python/__init__.py server/questions.py
+
+  test-server:
+    name: Question contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install "numpy>=2.0,<2.2" "jinja2>=3.1"
+      - run: python server/test_qvalidate.py
