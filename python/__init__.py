@@ -68,9 +68,13 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
     min_spacing : minimum required relative difference |a-b|/max(|a|,|b|)
                   between any two choice values (default 12 %).
 
-    Returns list of 5 unique strings; correct is always at index 0.
+    Returns exactly 5 unique strings; correct is always at index 0.
     If a distractor is too close to the correct value or any already-placed
-    choice, it is replaced by correct_val * fallback_multiplier.
+    choice, it is replaced by a fallback: first correct_val * multiplier, then —
+    once those are exhausted or unusable (notably correct_val == 0, where every
+    multiple is 0 again) — correct_val ± k * step, with step taken from the
+    spread of the supplied distractors. Raises ValueError if even that cannot
+    produce 5 distinct choices.
     """
     def _too_close(v, existing_vals):
         """Return True if v is within min_spacing of any value in existing_vals."""
@@ -96,35 +100,63 @@ def make_choices(correct_val: float, distractors: list, fmt, min_spacing: float 
                  2.3, 2.7, 3.5, 4.5, 11.0, 12.0, 0.3, 0.15, 0.08]
     fb_idx = 0
 
+    def _place(v):
+        """Append fmt(v) to result if it is new and far enough from the rest."""
+        s = fmt(v)
+        if s in used_strs or _too_close(v, used_vals):
+            return False
+        used_strs.add(s)
+        used_vals.append(v)
+        result.append(s)
+        return True
+
+    def _additive_candidates():
+        """Yield correct_val ± k * step — the fallback of last resort, for when
+        scaling correct_val cannot produce anything new."""
+        spread = [abs(d - correct_val) for d in distractors
+                  if math.isfinite(d) and d != correct_val]
+        step = min(spread) if spread else abs(correct_val)
+        # Keep step wide enough that correct_val ± step already clears min_spacing.
+        step = max(step, abs(correct_val) * min_spacing / max(1.0 - min_spacing, 0.1))
+        if not math.isfinite(step) or step <= 0.0:
+            step = 1.0
+        ks = (1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 26, 33, 42, 54, 70)
+        for sign in (1.0, -1.0):    # positive offsets first: they stay physical
+            for k in ks:            # for quantities that cannot go negative
+                yield correct_val + sign * k * step
+
+    additive = _additive_candidates()
+
+    def _place_fallback():
+        """Fill one slot with a synthetic value; False if nothing worked."""
+        nonlocal fb_idx
+        while fb_idx < len(fallbacks):
+            candidate = correct_val * fallbacks[fb_idx]
+            fb_idx += 1
+            if candidate == 0:
+                continue
+            if _place(candidate):
+                return True
+        for mult in [1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8]:
+            if _place(correct_val * mult):
+                return True
+        for candidate in additive:
+            if _place(candidate):
+                return True
+        return False
+
     for d in distractors:
-        s = fmt(d)
-        if s not in used_strs and not _too_close(d, used_vals):
-            used_strs.add(s)
-            used_vals.append(d)
-            result.append(s)
-        else:
-            placed = False
-            while fb_idx < len(fallbacks):
-                candidate = correct_val * fallbacks[fb_idx]
-                fb_idx += 1
-                if candidate == 0:
-                    continue
-                cs = fmt(candidate)
-                if cs not in used_strs and not _too_close(candidate, used_vals):
-                    used_strs.add(cs)
-                    used_vals.append(candidate)
-                    result.append(cs)
-                    placed = True
-                    break
-            if not placed:
-                for mult in [1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8]:
-                    cs = fmt(correct_val * mult)
-                    candidate = correct_val * mult
-                    if cs not in used_strs and not _too_close(candidate, used_vals):
-                        used_strs.add(cs)
-                        used_vals.append(candidate)
-                        result.append(cs)
-                        placed = True
-                        break
+        if len(result) == 5:
+            break
+        if not _place(d):
+            _place_fallback()   # a miss here is retried by the top-up below
+
+    while len(result) < 5:
+        if not _place_fallback():
+            raise ValueError(
+                f"make_choices: only built {len(result)} of 5 distinct choices "
+                f"for correct value {correct_val!r} with distractors "
+                f"{list(distractors)!r}"
+            )
 
     return result
