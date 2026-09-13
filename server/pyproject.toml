@@ -17,6 +17,11 @@ dependencies = [
 [tool.uv]
 package = false
 
+[tool.ruff]
+# Verbatim copy of python/__init__.py, kept byte-identical and checked with `cmp` in CI.
+# Linting it here would force edits that break that check; lint the canonical file instead.
+extend-exclude = ["questions.py"]
+
 [tool.ruff.lint]
 # E402: sys.path manipulation before imports is intentional (Python version filter)
 ignore = ["E402"]

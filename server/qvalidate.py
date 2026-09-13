@@ -26,6 +26,8 @@ cannot reach GOOGLE_API_KEY / API_TOKEN, and so a runaway can actually be killed
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import json
 import os
 import sys
@@ -33,11 +35,11 @@ import sys
 # Jinja2 settings must match the browser preview (index.html:1897-1901) and the
 # render-all path (python/exam_core.py:113-117) exactly.  A mismatch here means
 # whitespace-sensitive templates validate differently than they render.
-_ENV_KW = dict(
-    trim_blocks=True,
-    lstrip_blocks=True,
-    keep_trailing_newline=False,
-)
+_ENV_KW = {
+    "trim_blocks": True,
+    "lstrip_blocks": True,
+    "keep_trailing_newline": False,
+}
 
 # Fixed, never random: a validator that fails one call in twenty and passes the retry
 # is worse than no validator.  42/137/271 are the seedA/seedB/seedC defaults
@@ -72,6 +74,21 @@ SANDBOX_ENV = {
     **_THREAD_CAPS,
 }
 
+# Modules the browser cannot run. Pyodide has no raw sockets, no subprocess and no real
+# threads, so question code importing any of these would pass here and then fail in the
+# preview — a false positive, which is the failure mode this validator exists to avoid.
+# Blocking them also narrows what model-authored code can reach.
+#
+# This is a parity lint and defence in depth, NOT the security boundary. It is bypassable
+# (obfuscated __import__, a module already bound to another name). The boundary is the
+# subprocess itself: a scrubbed environment with no API keys, RLIMIT_NPROC=0 so nothing
+# can fork or exec, RLIMIT_FSIZE=0 so nothing can write, and a parent that can SIGKILL it.
+_BLOCKED_IMPORTS = frozenset({
+    "socket", "ssl", "subprocess", "multiprocessing", "_thread", "threading",
+    "concurrent", "urllib", "http", "ftplib", "smtplib", "poplib", "imaplib",
+    "xmlrpc", "webbrowser", "ctypes", "importlib",
+})
+
 _MAX_MSG = 400
 
 OK = "ok"
@@ -87,6 +104,52 @@ def _truncate(msg: str) -> str:
 
 def _missing_module(exc: ImportError) -> str:
     return getattr(exc, "name", "") or ""
+
+
+def _classify_import_error(exc: ImportError, prefix: str = "") -> tuple[str, str]:
+    """Map an ImportError to (state, message).
+
+    A missing numpy/jinja2/questions means OUR sandbox is broken, so it must report
+    "unavailable" and skip the fix loop rather than blaming the model for it.
+    """
+    missing = _missing_module(exc)
+    root = missing.partition(".")[0]
+    if root in _RUNTIME_MODULES:
+        return UNAVAILABLE, _truncate(f"validation sandbox is missing {missing}")
+    if root in _BLOCKED_IMPORTS:
+        return INVALID, _truncate(f"{prefix}{exc}")
+    return INVALID, _truncate(
+        f"{prefix}cannot import {missing or exc!r}: the browser runtime provides only "
+        "numpy, jinja2 and the Python standard library. Rewrite without it."
+    )
+
+
+@contextlib.contextmanager
+def _blocked_imports():
+    """Refuse _BLOCKED_IMPORTS for the duration of the block.
+
+    Patches builtins.__import__ rather than installing a sys.meta_path finder: the
+    import statement always calls __import__, whereas meta_path is skipped entirely
+    for anything already in sys.modules (numpy and jinja2 drag in several of these).
+    Blocking importlib closes the importlib.import_module route at the same time.
+    """
+    real_import = builtins.__import__
+
+    def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+        root = name.partition(".")[0]
+        if level == 0 and root in _BLOCKED_IMPORTS:
+            raise ImportError(
+                f"{root} is not usable in the browser runtime (Pyodide has no raw "
+                "sockets, no subprocess and no real threads) and is not available here",
+                name=root,
+            )
+        return real_import(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = guarded
+    try:
+        yield
+    finally:
+        builtins.__import__ = real_import
 
 
 def _check_result(d: object, seed: int) -> str:
@@ -155,6 +218,7 @@ def validate(
     try:
         import jinja2
         import numpy
+
         import questions
     except ImportError as exc:
         return UNAVAILABLE, _truncate(
@@ -183,15 +247,10 @@ def validate(
     try:
         namespace: dict = {}
         try:
-            exec(compile(python_code, f"{expected_name or 'question'}.py", "exec"), namespace)  # noqa: S102
+            with _blocked_imports():
+                exec(compile(python_code, f"{expected_name or 'question'}.py", "exec"), namespace)  # noqa: S102
         except ImportError as exc:
-            missing = _missing_module(exc)
-            if missing.split(".")[0] in _RUNTIME_MODULES:
-                return UNAVAILABLE, _truncate(f"validation sandbox is missing {missing}")
-            return INVALID, _truncate(
-                f"cannot import {missing or exc!r}: the browser runtime provides only "
-                "numpy, jinja2 and the Python standard library. Rewrite without it."
-            )
+            return _classify_import_error(exc)
         except Exception as exc:  # noqa: BLE001
             return INVALID, _truncate(f"python_code failed to load: {type(exc).__name__}: {exc}")
 
@@ -208,20 +267,15 @@ def validate(
         for seed in seeds:
             seen_names.clear()
             try:
-                result = generate(numpy.random.default_rng(seed))
+                with _blocked_imports():
+                    result = generate(numpy.random.default_rng(seed))
             except jinja2.UndefinedError as exc:
                 return INVALID, _truncate(
                     f"(seed {seed}) rendering the template raised {exc} — every variable used "
                     "in the template must be a key in the params dict passed to render_template()"
                 )
             except ImportError as exc:
-                missing = _missing_module(exc)
-                if missing.split(".")[0] in _RUNTIME_MODULES:
-                    return UNAVAILABLE, _truncate(f"validation sandbox is missing {missing}")
-                return INVALID, _truncate(
-                    f"(seed {seed}) cannot import {missing or exc!r}: the browser runtime provides "
-                    "only numpy, jinja2 and the Python standard library. Rewrite without it."
-                )
+                return _classify_import_error(exc, prefix=f"(seed {seed}) ")
             except Exception as exc:  # noqa: BLE001
                 return INVALID, _truncate(
                     f"(seed {seed}) generate(rng) raised {type(exc).__name__}: {exc}"
@@ -274,7 +328,7 @@ def _drop_privileges() -> None:
         if which is None:
             continue
         try:
-            soft, hard = resource.getrlimit(which)
+            _, hard = resource.getrlimit(which)
             want_soft, want_hard = limit
             if hard != resource.RLIM_INFINITY:
                 want_soft = min(want_soft, hard)

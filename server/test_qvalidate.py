@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Contract tests for qvalidate.py — run with `python server/test_qvalidate.py`.
 
@@ -24,7 +23,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-import qvalidate  # noqa: E402
+import qvalidate
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 BANK_JS = REPO / "src" / "default_bank.js"
@@ -178,6 +177,42 @@ class TestContract(unittest.TestCase):
             python_code="import totally_not_a_real_module\n" + GOOD_PYTHON,
         )
 
+    def test_blocked_modules_are_rejected(self):
+        """Pyodide has no sockets/subprocess/threads, so these must fail here too.
+
+        Otherwise the validator passes code that then breaks in the preview — the
+        false-positive direction this validator exists to prevent.
+        """
+        for module in ("socket", "subprocess", "threading", "multiprocessing",
+                       "urllib", "ssl", "ctypes", "importlib"):
+            with self.subTest(module=module):
+                self.assert_invalid(
+                    "not usable in the browser runtime",
+                    python_code=f"import {module}\n" + GOOD_PYTHON,
+                )
+
+    def test_blocked_modules_rejected_inside_generate(self):
+        """The guard must cover generate()'s body, not just module import time."""
+        self.assert_invalid(
+            "not usable in the browser runtime",
+            python_code=GOOD_PYTHON.replace(
+                "    a = float(rng.choice([1.5, 2.0, 2.5]))",
+                "    import socket  # noqa\n    a = float(rng.choice([1.5, 2.0, 2.5]))"),
+        )
+
+    def test_dunder_import_bypass_is_blocked(self):
+        """builtins.__import__ is patched, so the obvious bypass fails too."""
+        self.assert_invalid(
+            "not usable in the browser runtime",
+            python_code='__import__("socket")\n' + GOOD_PYTHON,
+        )
+
+    def test_allowed_modules_still_work(self):
+        """The denylist must not create false failures: math is used by 4 bank questions."""
+        state, message = self.check(
+            python_code=GOOD_PYTHON.replace("import numpy as np", "import math\nimport numpy as np"))
+        self.assertEqual(state, "ok", message)
+
     def test_seed_sensitivity(self):
         # q27_temperature returns 3 choices at seeds 195/207: make_choices cannot build
         # fallbacks when the correct value is 0 (32 F -> 0 C). A true positive — Render
@@ -198,7 +233,7 @@ def run_worker(template, python_code, expected_name, env_extra=None, timeout=30)
         [sys.executable, "-I", "-B", WORKER],
         input=json.dumps({"template": template, "python_code": python_code,
                           "expected_name": expected_name}),
-        capture_output=True, text=True, timeout=timeout, env=env,
+        capture_output=True, text=True, timeout=timeout, env=env, check=False,
     )
     try:
         result = json.loads(proc.stdout)
@@ -263,7 +298,7 @@ class TestWorker(unittest.TestCase):
             [sys.executable, "-I", "-B", WORKER],
             input=json.dumps({"template": GOOD_TEMPLATE, "python_code": GOOD_PYTHON,
                               "expected_name": "q_good"}),
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, check=False,
             env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
@@ -300,7 +335,6 @@ class _BlockImport:
     def find_spec(self, fullname, path=None, target=None):
         if fullname == self.name:
             raise ImportError("blocked for test", name=fullname)
-        return None
 
 
 class TestRuntimeParity(unittest.TestCase):
@@ -311,7 +345,7 @@ class TestRuntimeParity(unittest.TestCase):
         they render, which would make the validator lie in both directions.
         """
         html = INDEX_HTML.read_text()
-        block = re.search(r"_tpl = _j2\.Environment\((.*?)\)\.from_string", html, re.S)
+        block = re.search(r"_tpl = _j2\.Environment\((.*?)\)\.from_string", html, re.DOTALL)
         self.assertIsNotNone(block, "preview Environment(...) block not found in index.html")
         kwargs = block.group(1)
         for key, value in qvalidate._ENV_KW.items():
