@@ -1,6 +1,6 @@
 # QuestionForge — ExamForge Web App
 
-A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (and similar courses). Uses [Pyodide](https://pyodide.org/) to run Python question-generation code directly in your browser. No server required. All data stays in `localStorage`.
+A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (and similar courses). Uses [Pyodide](https://pyodide.org/) to run Python question-generation code directly in your browser. Question authoring, preview, and export run entirely in your browser, with state saved to `localStorage`. An optional AI Chat assistant sends question content to a runner server and on to Google's Gemini API — see [PRIVACY.md](PRIVACY.md).
 
 🔗 **Live app:** https://wdconinc.github.io/question-forge/
 
@@ -38,7 +38,7 @@ python scripts/build_default_bank.py \
 
 ## Privacy
 
-See [PRIVACY.md](PRIVACY.md). All processing happens in your browser. No data is ever sent to any server.
+See [PRIVACY.md](PRIVACY.md). Authoring, previewing, and exporting happen entirely in your browser. The optional AI Chat assistant sends your question content to a runner server, which forwards it to Google's Gemini API.
 
 ## Colors
 
