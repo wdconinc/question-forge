@@ -227,6 +227,80 @@ class TestContract(unittest.TestCase):
             self.assertEqual(state, "ok", f"seed {seed}: {message}")
 
 
+# A minimal numerical-entry question that satisfies that contract (no 'choices',
+# see DEFAULT_SYSTEM_PROMPT's "Numerical entry" section in server/main.py).
+GOOD_NUMERICAL_TEMPLATE = "A cart accelerates at {{ a }} m/s^2 for {{ t }} s.\n"
+GOOD_NUMERICAL_PYTHON = '''
+import numpy as np
+from questions import resolve_tolerance, render_template
+
+def generate(rng: np.random.Generator) -> dict:
+    a = float(rng.choice([1.5, 2.0, 2.5]))
+    t = float(rng.choice([3.0, 4.0, 5.0]))
+    v = a * t
+    params = {"a": f"{a:.1f}", "t": f"{t:.1f}"}
+    return {
+        "type": "numerical",
+        "question": render_template("q_good", params),
+        "answer": v,
+        "tolerance": resolve_tolerance(v, rel_tol=0.02),
+        "unit": "m/s",
+        "topic": "Kinematics",
+        "difficulty": 2,
+    }
+'''
+
+
+class TestNumericalContract(unittest.TestCase):
+    """type: "numerical" questions have no 'choices' and a different answer shape —
+    a regression suite for the bug where _check_result required 'choices'
+    unconditionally and rejected every valid numerical-entry question."""
+
+    def check(self, template=GOOD_NUMERICAL_TEMPLATE, python_code=GOOD_NUMERICAL_PYTHON,
+              expected_name="q_good", **kw):
+        return qvalidate.validate(template, python_code, expected_name=expected_name, **kw)
+
+    def assert_invalid(self, needle, **kw):
+        state, message = self.check(**kw)
+        self.assertEqual(state, "invalid", f"got {state}: {message}")
+        self.assertIn(needle, message)
+        return message
+
+    def test_baseline_is_ok(self):
+        self.assertEqual(self.check(), ("ok", ""))
+
+    def test_missing_choices_is_not_required(self):
+        # The bug this class guards against: a numerical question has no 'choices'
+        # key at all, and must not be rejected for lacking one.
+        state, message = self.check()
+        self.assertEqual(state, "ok", message)
+
+    def test_missing_tolerance_rejected(self):
+        self.assert_invalid(
+            "missing the 'tolerance' key",
+            python_code=GOOD_NUMERICAL_PYTHON.replace(
+                '"tolerance": resolve_tolerance(v, rel_tol=0.02),\n', ""),
+        )
+
+    def test_non_numeric_answer_rejected(self):
+        self.assert_invalid(
+            "'answer' must be a number",
+            python_code=GOOD_NUMERICAL_PYTHON.replace('"answer": v,', '"answer": str(v),'),
+        )
+
+    def test_negative_tolerance_rejected(self):
+        self.assert_invalid(
+            "must be non-negative",
+            python_code=GOOD_NUMERICAL_PYTHON.replace(
+                '"tolerance": resolve_tolerance(v, rel_tol=0.02),',
+                '"tolerance": -1.0,'),
+        )
+
+    def test_difficulty_out_of_range_rejected(self):
+        self.assert_invalid("between 1", python_code=GOOD_NUMERICAL_PYTHON.replace(
+            '"difficulty": 2', '"difficulty": 9'))
+
+
 def run_worker(template, python_code, expected_name, env_extra=None, timeout=30):
     """Drive qvalidate.py the way main.py does: a subprocess with a scrubbed env."""
     env = dict(qvalidate.SANDBOX_ENV)

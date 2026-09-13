@@ -152,15 +152,80 @@ def _blocked_imports():
         builtins.__import__ = real_import
 
 
-def _check_result(d: object, seed: int) -> str:
-    """Return an error message, or "" if *d* satisfies the contract.
+def _check_numerical_result(d: dict, seed: int) -> str:
+    """Return an error message, or "" if *d* satisfies the numerical-entry contract.
 
-    question/choices/answer are required — index.html:1910-1912 subscripts them
-    directly.  topic/difficulty are optional; index.html:1913-1914 defaults them.
+    question/answer/tolerance are required — index.html:2214-2216 subscripts/converts
+    them directly.  unit/sig_figs/topic/difficulty are optional; index.html:2217-2220
+    default them.  There is deliberately no 'choices' requirement here: numerical
+    entry has no lettered choices at all (server/main.py's DEFAULT_SYSTEM_PROMPT).
+    """
+    at = f"(seed {seed})"
+    for key in ("question", "answer", "tolerance"):
+        if key not in d:
+            return f"{at} the dict returned by generate(rng) is missing the '{key}' key"
+
+    question = d["question"]
+    if not isinstance(question, str) or not question.strip():
+        return f"{at} 'question' must be a non-empty string"
+
+    answer = d["answer"]
+    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
+        return f"{at} 'answer' must be a number, got {type(answer).__name__}"
+
+    tolerance = d["tolerance"]
+    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
+        return f"{at} 'tolerance' must be a number, got {type(tolerance).__name__}"
+    if tolerance < 0:
+        return f"{at} 'tolerance' must be non-negative, got {tolerance!r}"
+
+    if "unit" in d and not isinstance(d["unit"], str):
+        return f"{at} 'unit' must be a string, got {type(d['unit']).__name__}"
+
+    if "sig_figs" in d:
+        try:
+            sig_figs = int(d["sig_figs"])
+        except (TypeError, ValueError):
+            return f"{at} 'sig_figs' must be an integer, got {d['sig_figs']!r}"
+        if sig_figs < 1:
+            return f"{at} 'sig_figs' must be at least 1, got {sig_figs}"
+
+    return _check_common_fields(d, seed)
+
+
+def _check_common_fields(d: dict, seed: int) -> str:
+    """topic/difficulty checks shared by both question types.
+
+    Both are optional; index.html defaults them (1913-1914 / 2219-2220).
+    """
+    at = f"(seed {seed})"
+    if "topic" in d and not isinstance(d["topic"], str):
+        return f"{at} 'topic' must be a string, got {type(d['topic']).__name__}"
+
+    if "difficulty" in d:
+        try:
+            difficulty = int(d["difficulty"])
+        except (TypeError, ValueError):
+            return f"{at} 'difficulty' must be an integer 1-4, got {d['difficulty']!r}"
+        if not 1 <= difficulty <= 4:
+            return f"{at} 'difficulty' must be between 1 (easy) and 4 (hardest), got {difficulty}"
+
+    return ""
+
+
+def _check_result(d: object, seed: int) -> str:
+    """Return an error message, or "" if *d* satisfies the exam contract.
+
+    Dispatches on d["type"] (default "multiple_choice", matching index.html:2211
+    and python/exam_core.py:55) — numerical-entry questions have no 'choices' and
+    a different answer shape, so they get their own contract check.
     """
     at = f"(seed {seed})"
     if not isinstance(d, dict):
         return f"{at} generate(rng) must return a dict, got {type(d).__name__}"
+
+    if d.get("type", "multiple_choice") == "numerical":
+        return _check_numerical_result(d, seed)
 
     for key in ("question", "choices", "answer"):
         if key not in d:
@@ -189,18 +254,7 @@ def _check_result(d: object, seed: int) -> str:
     if not isinstance(answer, str) or answer not in LETTERS:
         return f"{at} 'answer' must be one of 'a'-'e', got {answer!r}"
 
-    if "topic" in d and not isinstance(d["topic"], str):
-        return f"{at} 'topic' must be a string, got {type(d['topic']).__name__}"
-
-    if "difficulty" in d:
-        try:
-            difficulty = int(d["difficulty"])
-        except (TypeError, ValueError):
-            return f"{at} 'difficulty' must be an integer 1-4, got {d['difficulty']!r}"
-        if not 1 <= difficulty <= 4:
-            return f"{at} 'difficulty' must be between 1 (easy) and 4 (hardest), got {difficulty}"
-
-    return ""
+    return _check_common_fields(d, seed)
 
 
 def validate(
