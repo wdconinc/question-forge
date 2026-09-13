@@ -336,11 +336,11 @@
     }
     #ai-conn-popover.open { display: block; }
     #ai-conn-popover label { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; color: #444; font-weight: 600; }
-    #ai-conn-popover input[type="text"], #ai-conn-popover input[type="password"] {
+    #ai-conn-popover input[type="text"], #ai-conn-popover input[type="password"], #ai-conn-popover select {
       border: 1px solid #ccc; border-radius: 4px; padding: 4px 7px;
-      font-size: 12px; font-weight: 400; color: #222;
+      font-size: 12px; font-weight: 400; color: #222; background: white;
     }
-    #ai-conn-popover input:focus { outline: none; border-color: #1e3a5f; }
+    #ai-conn-popover input:focus, #ai-conn-popover select:focus { outline: none; border-color: #1e3a5f; }
     #ai-conn-popover textarea {
       border: 1px solid #ccc; border-radius: 4px; padding: 4px 7px;
       font-size: 11px; font-weight: 400; color: #222; font-family: monospace;
@@ -566,6 +566,11 @@
   </label>
   <label>Access Token (8 chars)
     <input type="password" id="ai-token" maxlength="32" value="phys1020" placeholder="••••••••" autocomplete="off">
+  </label>
+  <label>Model
+    <select id="ai-model-select">
+      <option value="">Server default</option>
+    </select>
   </label>
   <div style="display:flex;gap:6px;margin-top:4px">
     <button id="btn-ai-connect" style="flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">Connect</button>
@@ -3270,6 +3275,8 @@ const aiState = {
   connected: false,
   url: "https://question-forge-server.fly.dev",
   token: "phys1020",
+  model: "",      // "" = use the server's default model; otherwise a model id from GET /models
+  availableModels: [],  // [{id, label, provider}, ...] fetched from GET /models on connect
   systemPrompt: DEFAULT_SYSTEM_PROMPT,  // pre-populated default; edit to customize
   messages: [],   // {role, content} conversation history sent to LLM
   chatLog: [],    // {role, html, toolBadges} display log — persisted in localStorage
@@ -3282,6 +3289,7 @@ function loadAIState() {
     const s = JSON.parse(localStorage.getItem("questionForge_ai") || "{}");
     if (s.url)     aiState.url     = s.url;
     if (s.token)   aiState.token   = s.token;
+    if (typeof s.model === "string") aiState.model = s.model;
     if (typeof s.systemPrompt === "string" && s.systemPrompt.trim() !== "") {
       let sp = s.systemPrompt.trim();
       // Migration: if the saved prompt still contains the old OpenStax opening line,
@@ -3302,11 +3310,46 @@ function saveAIState() {
   localStorage.setItem("questionForge_ai", JSON.stringify({
     url: aiState.url,
     token: aiState.token,
+    model: aiState.model,
     systemPrompt: aiState.systemPrompt.trim() === DEFAULT_SYSTEM_PROMPT.trim() ? "" : aiState.systemPrompt,
     chatLog: aiState.chatLog,
     panelOpen: aiState.panelOpen,
     panelWidth: aiState.panelWidth,
   }));
+}
+
+function populateModelSelect(models, defaultModel) {
+  aiState.availableModels = models || [];
+  const sel = document.getElementById("ai-model-select");
+  if (!sel) return;
+  const prevSelection = aiState.model;
+  sel.innerHTML = "";
+  const defOpt = document.createElement("option");
+  defOpt.value = "";
+  defOpt.textContent = defaultModel ? `Server default (${defaultModel})` : "Server default";
+  sel.appendChild(defOpt);
+  const byProvider = {};
+  for (const m of aiState.availableModels) {
+    (byProvider[m.provider] ||= []).push(m);
+  }
+  for (const provider of Object.keys(byProvider).sort()) {
+    const group = document.createElement("optgroup");
+    group.label = provider === "anthropic" ? "Claude (Anthropic)" : provider === "gemini" ? "Gemini (Google)" : provider;
+    for (const m of byProvider[provider]) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      group.appendChild(opt);
+    }
+    sel.appendChild(group);
+  }
+  // Restore the saved selection if the server still offers that model; otherwise fall back to default.
+  if (prevSelection && aiState.availableModels.some(m => m.id === prevSelection)) {
+    sel.value = prevSelection;
+  } else {
+    sel.value = "";
+    if (prevSelection) { aiState.model = ""; saveAIState(); }
+  }
 }
 
 function setAIDot(state) {
@@ -3422,7 +3465,20 @@ async function doAIConnect(silent = false) {
     const data = await res.json();
     aiState.url = url; aiState.token = token; aiState.connected = true;
     saveAIState();
-    statusEl.textContent = `✓ Connected · model: ${data.model || "?"}`;
+
+    // Populate the model picker (best-effort — an older server may not have /models)
+    try {
+      const modelsRes = await fetch(url + "/models", { signal: AbortSignal.timeout(10000) });
+      if (modelsRes.ok) {
+        const modelsData = await modelsRes.json();
+        populateModelSelect(modelsData.models, modelsData.default || data.model);
+      }
+    } catch (modelsErr) {
+      console.warn("[AI] could not fetch /models:", modelsErr);
+    }
+
+    const activeModel = aiState.model || data.model || "?";
+    statusEl.textContent = `✓ Connected · model: ${activeModel}`;
     statusEl.style.color = "#4caf50";
     setAIDot("connected");
     document.getElementById("chat-input").disabled  = false;
@@ -3430,7 +3486,7 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
     updateFixAIButton();
-    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(data.model || "?")}`);
+    if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(activeModel)}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
     statusEl.textContent = "✗ " + msg;
@@ -3687,6 +3743,7 @@ async function doSendChat() {
         },
         body: JSON.stringify({
           messages: aiState.messages,
+          model: aiState.model || "",
           template, python_code: pythonCode, question_id: qid,
           system_prompt: aiState.systemPrompt.trim() === DEFAULT_SYSTEM_PROMPT.trim() ? "" : aiState.systemPrompt,
           question_set_prompt: (() => {
@@ -4251,6 +4308,17 @@ function setupAIChat() {
   on("btn-ai-test-stream", doTestStream);
   on("btn-ai-conn-close",  () => document.getElementById("ai-conn-popover").classList.remove("open"));
   on("btn-chat-send",      doSendChat);
+
+  document.getElementById("ai-model-select")?.addEventListener("change", e => {
+    aiState.model = e.target.value;
+    saveAIState();
+    const label = e.target.selectedOptions[0]?.textContent || aiState.model || "server default";
+    if (aiState.connected) {
+      const statusEl = document.getElementById("ai-conn-status");
+      if (statusEl) statusEl.textContent = `✓ Connected · model: ${aiState.model || label}`;
+    }
+    appendChatMsg("system-note", `Model set to ${escHtml(label)}.`);
+  });
 
   // Enter key sends (Shift+Enter for newline)
   document.getElementById("chat-input")?.addEventListener("keydown", e => {
