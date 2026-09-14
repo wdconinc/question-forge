@@ -693,14 +693,14 @@
         <div id="preview-panel" style="flex:1.4;overflow-y:auto;display:flex;flex-direction:column;min-height:100px">
           <div id="preview-hdr">
             <span>👁 Preview</span>
-            <button class="btn btn-primary" id="btn-preview" disabled style="font-size:11px;padding:2px 8px">▶ Preview</button>
+            <button class="btn btn-primary" id="btn-preview" disabled title="Preview runs automatically — click to force a re-run" style="font-size:11px;padding:2px 8px">▶ Preview</button>
             <label style="font-weight:normal;color:#888;font-size:10.5px;display:flex;align-items:center;gap:4px">
               seed: A=<input id="preview-seed-input" type="number" value="42" min="0" step="1"
                 style="width:56px;font-size:10.5px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background:#fff;color:#333">
             </label>
           </div>
           <div id="preview-content" style="flex:1;padding:14px 18px;font-size:14px;line-height:1.6">
-            <p style="color:#aaa;font-style:italic">Select a question and click ▶ Preview.</p>
+            <p style="color:#aaa;font-style:italic">Select a question to preview it.</p>
           </div>
         </div>
 
@@ -1507,6 +1507,8 @@ let pyodideReady = false;
 let templateEditor = null;
 let pythonEditor = null;
 let saveTimer = null;
+let previewTimer = null;
+let previewRunId = 0;
 let lastPreviewError = null;   // tracks the most recent preview error (null = no error / success)
 
 // ── State persistence ──────────────────────────────────────────────────────
@@ -1612,6 +1614,7 @@ import questions
     toast("Python ready \u2713", "success");
     document.getElementById("btn-render-all").disabled = false;
     document.getElementById("btn-preview").disabled = false;
+    if (state.selectedQuestion) doPreview();
   } catch (e) {
     setStatus("\u26a0 Error: " + e.message);
     document.getElementById("loading-status").style.color = "#ff9090";
@@ -2027,7 +2030,7 @@ function setupSidebar() {
 }
 
 // ── Question selection ─────────────────────────────────────────────────────
-function selectQuestion(qid) {
+function selectQuestion(qid, { autoPreview = true } = {}) {
   state.selectedQuestion = qid;
   document.querySelectorAll(".sidebar-item").forEach(el => {
     el.classList.toggle("selected", el.dataset.id === qid);
@@ -2055,9 +2058,18 @@ function selectQuestion(qid) {
   const typeSelect = document.getElementById("ep-type-select");
   if (typeSelect) typeSelect.value = q.type || "multiple_choice";
 
-  document.getElementById("preview-content").innerHTML =
-    '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>';
+  // setValue() above fires the editors' own "change" handlers, which schedule
+  // a debounced auto-preview \u2014 cancel that so it can't fire late and clobber
+  // whatever this call decides to show instead.
+  cancelAutoPreview();
   lastPreviewError = null;   // clear stale error from previous question
+  if (autoPreview && pyodideReady) {
+    doPreview();
+  } else {
+    document.getElementById("preview-content").innerHTML = pyodideReady
+      ? '<p style="color:#aaa;font-style:italic">Click \u25b6 Preview to render this question.</p>'
+      : '<p style="color:#aaa;font-style:italic">Preview will run automatically once the Python runtime finishes loading\u2026</p>';
+  }
   updatePreviewSeedLabel();
   renderParamsPanel(qid);
   debounceSave();
@@ -2200,6 +2212,18 @@ function doDeleteSet(setId) {
 }
 
 // ── Preview ────────────────────────────────────────────────────────────────
+// Auto-preview: re-runs after an editor change or question switch, debounced
+// so a burst of keystrokes doesn't spawn a Pyodide run per character.
+function scheduleAutoPreview(delay = 600) {
+  clearTimeout(previewTimer);
+  if (!pyodideReady || !state.selectedQuestion) return;
+  previewTimer = setTimeout(doPreview, delay);
+}
+
+function cancelAutoPreview() {
+  clearTimeout(previewTimer);
+}
+
 async function doPreview() {
   if (!pyodideReady) { toast("Pyodide still loading\u2026", "error"); return; }
   const qid = state.selectedQuestion;
@@ -2210,6 +2234,10 @@ async function doPreview() {
   const templateStr = templateEditor ? templateEditor.getValue() : (q.template || "");
   const pythonCode  = pythonEditor  ? pythonEditor.getValue()  : (q.python_code || "");
   const seed = state.settings.seedA;
+
+  // Guards against an older, still-in-flight run resolving after a newer one
+  // (e.g. switching questions quickly) and clobbering its result.
+  const runId = ++previewRunId;
 
   document.getElementById("preview-content").innerHTML =
     '<p style="color:#888;font-style:italic">Running\u2026</p>';
@@ -2258,8 +2286,10 @@ else:
     }
 json.dumps(_result)
 `);
+    if (runId !== previewRunId) return;   // superseded by a newer preview run
     renderPreview(JSON.parse(resultJson));
   } catch (e) {
+    if (runId !== previewRunId) return;   // superseded by a newer preview run
     const errorMsg = e.message || String(e);
     lastPreviewError = errorMsg;
     document.getElementById("preview-content").innerHTML =
@@ -2431,7 +2461,10 @@ async function doRenderAll() {
       const detail  = m[2];
       // Navigate to the failing question so the user can see and fix it
       if (state.questions[failQid]) {
-        selectQuestion(failQid);
+        // Suppress selectQuestion's own auto-preview — it would race the
+        // explicit error box set just below and could overwrite it once the
+        // (probably successful, single-question) re-render resolves.
+        selectQuestion(failQid, { autoPreview: false });
         // Show the error in the preview panel with Fix-with-AI button
         const errorMsg = `Render All failed for question "${failQid}":\n${detail}`;
         lastPreviewError = errorMsg;
@@ -3135,6 +3168,7 @@ function setupEditors() {
     q.template = templateEditor.getValue();
     renderParamsPanel(state.selectedQuestion);
     debounceSave();
+    scheduleAutoPreview();
   });
 
   pythonEditor = CodeMirror(document.getElementById("wrap-python"), {
@@ -3149,6 +3183,7 @@ function setupEditors() {
     const q = state.questions[state.selectedQuestion]; if (!q) return;
     q.python_code = pythonEditor.getValue();
     debounceSave();
+    scheduleAutoPreview();
   });
 
   document.getElementById("ep-type-select")?.addEventListener("change", e => {
@@ -3157,6 +3192,7 @@ function setupEditors() {
     q.type = e.target.value;
     debounceSave();
     toast("Type changed — update the Python generator's return shape to match", "");
+    doPreview();
   });
 }
 
@@ -3184,7 +3220,7 @@ async function main() {
   // Seed override input in preview header
   document.getElementById("preview-seed-input")?.addEventListener("change", e => {
     const v = parseInt(e.target.value, 10);
-    if (!isNaN(v) && v >= 0) { state.settings.seedA = v; debounceSave(); }
+    if (!isNaN(v) && v >= 0) { state.settings.seedA = v; debounceSave(); doPreview(); }
     else e.target.value = state.settings.seedA; // revert invalid
   });
   on("btn-reset", async () => {
