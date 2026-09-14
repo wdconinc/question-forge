@@ -543,7 +543,7 @@
   <div class="tb-sep"></div>
   <button class="btn btn-primary" id="btn-render-all" disabled title="Render every paper to Markdown">▶ Render All</button>
   <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
-  <button class="btn btn-secondary" id="btn-export-qti" title="Export enabled questions as an IMS Common Cartridge question bank (for D2L Question Library import)">⬇ Export QTI</button>
+  <button class="btn btn-secondary" id="btn-export-qti" title="Export enabled questions as an IMS Common Cartridge question bank (for D2L Question Library import). Export all papers to get one seed-tagged version per paper, ready to drop into a question pool.">⬇ Export QTI</button>
   <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
   <button class="btn btn-secondary" id="btn-export-logs" style="font-size:11px" title="Export a diagnostic log (console messages, errors, browser info) to help troubleshoot issues. Stays on your device until you save or share the file.">⬇ Export Logs</button>
   <button class="btn btn-secondary" id="btn-reset" style="margin-left:auto;font-size:11px;opacity:0.75" title="Reset to default question bank">↺ Reset</button>
@@ -2658,16 +2658,22 @@ async function latexToMathML(tex, { display = false } = {}) {
 // above) so exported answer keys/choice order match that paper's actual balanced
 // answer positions, rather than the raw always-"a" authoring order. Uses
 // latexToMathML() (above) to embed math in the exported package.
+//
+// Exporting several papers at once materializes each one separately and puts
+// every version into the same bank, so one question becomes N seed-tagged
+// library items that can be pooled — see exportQtiForPapers below.
 
 function sanitizeFilename(s) {
   return String(s).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "question_set";
 }
 
-// If the exam has more than one paper, ask which one to export via a small
+// If the exam has more than one paper, ask which one(s) to export via a small
 // popover; with a single paper, use it immediately with no extra prompt.
+// Always calls back with an ARRAY of paper letters — "All papers" hands over
+// every one of them, so each question is exported once per paper seed.
 function chooseExportPaper(triggerEl, onChosen) {
   const papers = paperLetters();
-  if (papers.length === 1) { onChosen(papers[0]); return; }
+  if (papers.length === 1) { onChosen([papers[0]]); return; }
   openQtiPaperPopover(triggerEl, papers, onChosen);
 }
 
@@ -2690,22 +2696,41 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
 
   const label = document.createElement("div");
   label.style.cssText = "font-weight:700;font-size:12px;margin-bottom:8px;color:#1e3a5f";
-  label.textContent = "Export which paper?";
+  label.textContent = "Export which paper(s)?";
   pop.appendChild(label);
+
+  // Note: these buttons are deliberately not the .btn.btn-secondary class —
+  // that's styled (white text, translucent white background) for the dark
+  // toolbar, and would be invisible against this popover's white background.
+  const BTN_CSS = "padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
+
+  // "All papers" leads: it's the option that produces a pool-ready bank — every
+  // paper's version of each question, seed-suffixed and grouped per question.
+  const allBtn = document.createElement("button");
+  allBtn.type = "button";
+  allBtn.style.cssText = BTN_CSS + ";width:100%;margin-bottom:6px";
+  // Papers now run up to Z, so spelling every letter out would blow this button
+  // (and the export filename below) wide open — condense past a short run.
+  allBtn.textContent = papers.length > 3
+    ? `All ${papers.length} papers (${papers[0]}\u2013${papers[papers.length - 1]})`
+    : `All papers (${papers.join(", ")})`;
+  allBtn.title = "One version of each question per paper seed, grouped together so they can be added to a D2L question pool";
+  allBtn.addEventListener("click", () => {
+    closePopover();
+    onChosen([...papers]);
+  });
+  pop.appendChild(allBtn);
 
   const row = document.createElement("div");
   row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;max-width:264px";
   for (const paper of papers) {
     const btn = document.createElement("button");
     btn.type = "button";
-    // Note: deliberately not the .btn.btn-secondary class — that's styled
-    // (white text, translucent white background) for the dark toolbar, and
-    // would be invisible against this popover's white background.
-    btn.style.cssText = "flex:1 1 72px;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
+    btn.style.cssText = BTN_CSS + ";flex:1 1 72px";
     btn.textContent = `Paper ${paper}`;
     btn.addEventListener("click", () => {
       closePopover();
-      onChosen(paper);
+      onChosen([paper]);
     });
     row.appendChild(btn);
   }
@@ -2797,10 +2822,16 @@ function openTypeChoicePopover(triggerEl, onChosen) {
   }, 0);
 }
 
+// papers: the paper letters to export. Exporting more than one puts every
+// paper's version of each question into the SAME bank — one item per (question,
+// seed), grouped per question and seed-suffixed (see groupVersionsByQid and
+// versionedTitle in src/qti_export.js) — so an instructor can select all
+// versions of a question as one contiguous block and drop them into a single
+// D2L question pool, which then hands each student a different version.
 // qidFilter: null to export every enabled question, or an array of qids to
 // export just one question set's subset (still materialized against the FULL
 // enabled pool first — see materializePaper — then filtered down afterward).
-async function exportQtiForPaper(paper, qidFilter, filenameHint) {
+async function exportQtiForPapers(papers, qidFilter, filenameHint) {
   if (!pyodideReady) { toast("Pyodide still loading", "error"); return; }
   const { enabledOrder, enabledBank } = collectEnabledPool();
   if (enabledOrder.length === 0) { toast("No questions enabled!", "error"); return; }
@@ -2809,32 +2840,50 @@ async function exportQtiForPaper(paper, qidFilter, filenameHint) {
     if (!confirm(`${mcCount} multiple-choice questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
-  const seed = paperSeed(paper);
+  // Tag items with their seed only when the package really does hold several
+  // versions of each question — a single-paper export keeps the plain qids and
+  // titles it has always had.
+  const multi = papers.length > 1;
 
-  toast(`Materializing Paper ${paper} for QTI export…`, "");
-  let data;
+  const versions = [];
   try {
-    ({ data } = await materializePaper(paper, seed, enabledBank, enabledOrder, meta));
+    for (let pi = 0; pi < papers.length; pi++) {
+      const paper = papers[pi];
+      // paperSeed() is what Render All uses too, so an export can never
+      // disagree with the seed the paper was actually rendered with.
+      const seed = paperSeed(paper);
+      toast(multi
+        ? `Materializing Paper ${paper} (${pi + 1}/${papers.length}) for QTI export…`
+        : `Materializing Paper ${paper} for QTI export…`, "");
+      const { data } = await materializePaper(paper, seed, enabledBank, enabledOrder, meta);
+      for (const d of data) versions.push(multi ? { ...d, seed } : d);
+      setProgress((pi + 1) / papers.length * 100);
+    }
   } catch (e) {
     console.error(e);
     toast("QTI export failed: " + (e.message || String(e)), "error");
     return;
+  } finally {
+    setProgress(0);
   }
 
   const wanted = qidFilter ? new Set(qidFilter) : null;
-  const selected = (wanted ? data.filter(d => wanted.has(d.qid)) : data)
+  const selected = (wanted ? versions.filter(d => wanted.has(d.qid)) : versions)
     .map(d => ({ ...d, title: state.questions[d.qid]?.title || d.qid }));
   if (selected.length === 0) { toast("Nothing to export for this selection", "error"); return; }
 
   try {
     const { buildQtiPackage } = await import("./src/qti_export.js");
     const { blob, failures } = await buildQtiPackage(selected, { latexToMathML, manifestId: filenameHint });
-    saveAs(blob, `${filenameHint}_Paper${paper}_qti.zip`);
+    const paperTag = !multi ? `Paper${papers[0]}`
+      : papers.length > 3 ? `Papers${papers[0]}-${papers[papers.length - 1]}`
+      : `Papers${papers.join("")}`;
+    saveAs(blob, `${filenameHint}_${paperTag}_qti.zip`);
     if (failures.length > 0) {
       toast(`QTI exported with ${failures.length} math conversion issue(s) — see console`, "error");
       console.warn("QTI export MathML conversion failures:", failures);
     } else {
-      toast("QTI package exported ✓", "success");
+      toast(multi ? `QTI package exported ✓ — ${papers.length} versions per question` : "QTI package exported ✓", "success");
     }
   } catch (e) {
     console.error(e);
@@ -2844,13 +2893,13 @@ async function exportQtiForPaper(paper, qidFilter, filenameHint) {
 
 async function doExportQti(e) {
   const trigger = e?.currentTarget || document.getElementById("btn-export-qti");
-  chooseExportPaper(trigger, paper => exportQtiForPaper(paper, null, "question_forge"));
+  chooseExportPaper(trigger, papers => exportQtiForPapers(papers, null, "question_forge"));
 }
 
 async function doExportSetQti(setId, triggerEl) {
   const set = state.questionSets.find(s => s.id === setId);
   if (!set) return;
-  chooseExportPaper(triggerEl, paper => exportQtiForPaper(paper, set.questionOrder, sanitizeFilename(set.name || setId)));
+  chooseExportPaper(triggerEl, papers => exportQtiForPapers(papers, set.questionOrder, sanitizeFilename(set.name || setId)));
 }
 
 // ── Settings binding ───────────────────────────────────────────────────────
