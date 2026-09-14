@@ -1472,9 +1472,13 @@ const DEFAULT_SETTINGS = {
 // "how many randomizations?" is a single number rather than a set of toggles.
 const MAX_PAPERS = 26;   // one letter each
 
+function clampPaperCount(n) {
+  const i = Math.floor(Number(n));
+  return Number.isFinite(i) ? Math.min(MAX_PAPERS, Math.max(1, i)) : DEFAULT_SETTINGS.numPapers;
+}
+
 function paperCount() {
-  const n = Math.floor(Number(state.settings.numPapers));
-  return Number.isFinite(n) ? Math.min(MAX_PAPERS, Math.max(1, n)) : 1;
+  return clampPaperCount(state.settings.numPapers);
 }
 
 function paperLetters() {
@@ -1517,8 +1521,12 @@ function loadState() {
       // Papers were once a checkbox set (["A", "B"]) and are now a count; keep
       // how many papers the user had, dropping which letters they picked.
       if (Array.isArray(legacyPapers) && p.settings?.numPapers === undefined) {
-        mergedSettings.numPapers = Math.min(MAX_PAPERS, Math.max(1, legacyPapers.length));
+        mergedSettings.numPapers = legacyPapers.length;
       }
+      // localStorage is hand-editable and holds whatever an older build wrote,
+      // so settle the count here instead of leaving a 0/NaN/fractional value to
+      // be read raw and saved back under a top bar showing something else.
+      mergedSettings.numPapers = clampPaperCount(mergedSettings.numPapers);
 
       state = {
         settings: mergedSettings,
@@ -2869,7 +2877,7 @@ function bindSettings() {
       const n = parseInt(papersEl.value, 10);
       // A blank or junk entry keeps the current count rather than silently
       // collapsing the exam to a single paper.
-      if (Number.isFinite(n)) state.settings.numPapers = Math.min(MAX_PAPERS, Math.max(1, n));
+      if (Number.isFinite(n)) state.settings.numPapers = clampPaperCount(n);
       papersEl.value = paperCount();   // snap the field back to what was stored
       syncSeedInputs();
       debounceSave();
