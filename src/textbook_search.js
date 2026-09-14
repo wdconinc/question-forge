@@ -84,6 +84,18 @@ function parseHandle(handle, books) {
 }
 
 /**
+ * The section-id allow-list `sectionScope` carries for `slug`, or null if
+ * there is none -- including when the value present isn't a non-empty array.
+ * `sectionScope` ultimately comes from a caller-supplied args object, so a
+ * malformed per-book entry (a string, a number, a stray object) must not
+ * reach `.includes()` and either throw or be silently misread as a list.
+ */
+function scopeFor(sectionScope, slug) {
+  const allow = sectionScope && sectionScope[slug];
+  return Array.isArray(allow) && allow.length ? allow : null;
+}
+
+/**
  * Whether `id` is in scope for `slug` under `sectionScope`.
  *
  * `sectionScope` is the per-book section-id allow-list an instructor pinned
@@ -93,8 +105,8 @@ function parseHandle(handle, books) {
  * the tree's restriction is cosmetic.
  */
 function sectionAllowed(sectionScope, slug, id) {
-  const allow = sectionScope && sectionScope[slug];
-  return !allow || !allow.length || allow.includes(id);
+  const allow = scopeFor(sectionScope, slug);
+  return !allow || allow.includes(id);
 }
 
 /**
@@ -111,7 +123,7 @@ async function browseChapters(books, corpus, chapters, maxSections, sectionScope
   const wanted = chapters && chapters.length ? new Set(chapters.map(Number)) : null;
   const picked = [];
   for (const book of books) {
-    const pinned = sectionScope && sectionScope[book.slug] && sectionScope[book.slug].length;
+    const pinned = scopeFor(sectionScope, book.slug);
     if (!wanted && !pinned) continue;
     const index = await corpus.index(book.slug);
     for (const rec of index.sections || []) {
@@ -188,7 +200,7 @@ export async function searchTextbook(args = {}, deps = {}) {
     const stats = combineStats(indexes);
     const pooled = [];
     books.forEach((book, i) => {
-      const sections = sectionScope && sectionScope[book.slug];
+      const sections = scopeFor(sectionScope, book.slug);
       for (const r of rankSections(query, indexes[i], { topK: maxSections, chapters, sections, stats })) {
         pooled.push({ slug: book.slug, id: r.id, sh: r.section.sh, section: r.section, relevance: r.relevance });
       }
@@ -205,7 +217,7 @@ export async function searchTextbook(args = {}, deps = {}) {
   // the worst outcome available: the model is told to try different terms,
   // its one lookup for the turn is already spent, and the turn dies. Serve
   // the chapter (or the pinned sections) instead.
-  const hasScope = !!(sectionScope && books.some((b) => sectionScope[b.slug] && sectionScope[b.slug].length));
+  const hasScope = books.some((b) => scopeFor(sectionScope, b.slug));
   if (!selected.length && !sectionIds.length && (chapters.length || hasScope)) {
     selected = await browseChapters(books, corpus, chapters, maxSections, sectionScope);
     browsed = selected.length > 0;
@@ -404,11 +416,11 @@ export function buildCatalog(manifest, opts = {}) {
     "Available through the search_textbook tool. Cite sections exactly as [slug:number]."];
   let anyPartial = false;
   for (const book of books) {
-    const allow = sectionScope && sectionScope[book.slug];
+    const allow = scopeFor(sectionScope, book.slug);
     lines.push("", `[${book.slug}] ${book.title} — ${book.license || "CC BY-NC-SA 4.0"}`);
     for (const ch of book.chapters || []) {
       let selectedCount = ch.sections;
-      if (allow && allow.length) {
+      if (allow) {
         selectedCount = chapterSectionIds(ch).filter((id) => allow.includes(id)).length;
         if (selectedCount === 0) continue;
       }

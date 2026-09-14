@@ -1724,9 +1724,20 @@ function chapterSectionIds(ch) {
   return Array.from({ length: ch.sections }, (_, i) => `${ch.n}.${i}`);
 }
 
-/** Explicit per-book section-id allow-list, or null for "whole book in scope". */
+/**
+ * Explicit per-book section-id allow-list, or null for "whole book in scope".
+ *
+ * Normal tree edits never persist an empty array (setTextbookSectionsIncluded
+ * deletes the key instead), but this is the one place that reads
+ * `textbookSections` back out, so it normalizes `[]` the same way too --
+ * otherwise hand-edited or otherwise-produced state carrying `[]` would read
+ * as "nothing selected" here while searchTextbook's sectionAllowed() treats
+ * the same empty list as "unrestricted", rendering a book's tree as fully
+ * excluded while search still returns all of it.
+ */
 function textbookRestriction(set, book) {
-  return (set?.textbookSections && set.textbookSections[book.slug]) || null;
+  const raw = set?.textbookSections && set.textbookSections[book.slug];
+  return raw && raw.length ? raw : null;
 }
 
 function textbookBookEnabled(book, set) {
