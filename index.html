@@ -57,11 +57,6 @@
     .btn-secondary { background: rgba(255,255,255,0.18); color: white; border: 1px solid rgba(255,255,255,0.35); }
     .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.28); }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .paper-check-label {
-      display: flex; align-items: center; gap: 2px; font-size: 12px;
-      padding: 2px 6px; border: 1px solid rgba(255,255,255,0.35); border-radius: 3px; cursor: pointer;
-    }
-    .paper-check-label input { margin: 0; accent-color: #f0ab00; }
 
     /* Main layout */
     #main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--sidebar-width) 1fr; overflow: hidden; transition: grid-template-columns 0.2s ease; }
@@ -538,17 +533,15 @@
   <label>Date: <input type="text" id="setting-date" style="width:118px" value="April 20, 2026"></label>
   <label>Duration: <input type="text" id="setting-duration" style="width:68px" value="3 hours"></label>
   <div class="tb-sep"></div>
+  <label title="How many randomized papers to generate: 1 gives Paper A, 3 gives papers A–C, and so on up to Z.">Papers: <input type="number" id="setting-num-papers" style="width:48px" min="1" max="26" step="1" value="2"></label>
+  <div class="tb-sep"></div>
   <span style="font-size:11px;opacity:0.8">Seeds:</span>
-  <label>A <input type="number" id="setting-seed-a" style="width:54px" value="42"></label>
-  <label>B <input type="number" id="setting-seed-b" style="width:54px" value="137"></label>
-  <label>C <input type="number" id="setting-seed-c" style="width:54px" value="271"></label>
+  <label data-seed-paper="A">A <input type="number" id="setting-seed-a" style="width:54px" value="42"></label>
+  <label data-seed-paper="B">B <input type="number" id="setting-seed-b" style="width:54px" value="137"></label>
+  <label data-seed-paper="C">C <input type="number" id="setting-seed-c" style="width:54px" value="271"></label>
+  <span id="seed-derived-hint" style="font-size:11px;opacity:0.65;display:none" title="Papers past C take a seed derived from their position, so no box is needed for them."></span>
   <div class="tb-sep"></div>
-  <span style="font-size:11px;opacity:0.8">Papers:</span>
-  <label class="paper-check-label"><input type="checkbox" id="paper-check-A" checked>A</label>
-  <label class="paper-check-label"><input type="checkbox" id="paper-check-B" checked>B</label>
-  <label class="paper-check-label"><input type="checkbox" id="paper-check-C">C</label>
-  <div class="tb-sep"></div>
-  <button class="btn btn-primary" id="btn-render-all" disabled title="Render enabled papers to Markdown">▶ Render All</button>
+  <button class="btn btn-primary" id="btn-render-all" disabled title="Render every paper to Markdown">▶ Render All</button>
   <button class="btn btn-secondary" id="btn-export-zip" title="Export full Python project as ZIP">⬇ Export ZIP</button>
   <button class="btn btn-secondary" id="btn-export-qti" title="Export enabled questions as an IMS Common Cartridge question bank (for D2L Question Library import)">⬇ Export QTI</button>
   <button class="btn btn-secondary" id="btn-import" title="Import questions from ZIP">⬆ Import</button>
@@ -1471,8 +1464,34 @@ const DEFAULT_SETTINGS = {
   date: "April 20, 2026", timeSlot: "9:00 AM \u2013 11:00 AM",
   duration: "3 hours", examiners: "W. Deconinck",
   seedA: 42, seedB: 137, seedC: 271,
-  papers: ["A", "B"], numQuestions: 30,
+  numPapers: 2, numQuestions: 30,
 };
+
+// ── Papers ─────────────────────────────────────────────────────────────────
+// Papers are lettered A, B, C, … and always run from A up to numPapers, so
+// "how many randomizations?" is a single number rather than a set of toggles.
+const MAX_PAPERS = 26;   // one letter each
+
+function clampPaperCount(n) {
+  const i = Math.floor(Number(n));
+  return Number.isFinite(i) ? Math.min(MAX_PAPERS, Math.max(1, i)) : DEFAULT_SETTINGS.numPapers;
+}
+
+function paperCount() {
+  return clampPaperCount(state.settings.numPapers);
+}
+
+function paperLetters() {
+  return Array.from({ length: paperCount() }, (_, i) => String.fromCharCode(65 + i));
+}
+
+// The seed one paper is generated with: the explicit A/B/C value from the top
+// bar when there is one, otherwise a value derived from the paper's position.
+// Render All and the QTI export both go through here, so an export can never
+// disagree with the seed the paper was actually rendered with.
+function paperSeed(paper) {
+  return state.settings[`seed${paper}`] ?? (42 + (paper.charCodeAt(0) - 65) * 95);
+}
 
 // Per-set question type: guides the AI's authoring style without overriding
 // the base system prompt or the set's own context prompt.
@@ -1497,8 +1516,17 @@ function loadState() {
     if (raw) {
       const p = JSON.parse(raw);
       // Extract legacy questionSetPrompt before merging settings
-      const { questionSetPrompt: legacyPrompt = "", ...mergedSettings } =
+      const { questionSetPrompt: legacyPrompt = "", papers: legacyPapers, ...mergedSettings } =
         { ...DEFAULT_SETTINGS, ...(p.settings || {}) };
+      // Papers were once a checkbox set (["A", "B"]) and are now a count; keep
+      // how many papers the user had, dropping which letters they picked.
+      if (Array.isArray(legacyPapers) && p.settings?.numPapers === undefined) {
+        mergedSettings.numPapers = legacyPapers.length;
+      }
+      // localStorage is hand-editable and holds whatever an older build wrote,
+      // so settle the count here instead of leaving a 0/NaN/fractional value to
+      // be read raw and saved back under a top bar showing something else.
+      mergedSettings.numPapers = clampPaperCount(mergedSettings.numPapers);
 
       state = {
         settings: mergedSettings,
@@ -2372,8 +2400,7 @@ async function doRenderAll() {
   if (mcCount > 0 && mcCount % 5 !== 0) {
     if (!confirm(`${mcCount} multiple-choice questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
-  const papers = (state.settings.papers || ["A"]);
-  if (papers.length === 0) { toast("No papers selected!", "error"); return; }
+  const papers = paperLetters();
 
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
 
@@ -2385,9 +2412,8 @@ async function doRenderAll() {
   try {
     for (let pi = 0; pi < papers.length; pi++) {
       const paper = papers[pi];
-      const seedKey = `seed${paper}`;
-      const seed = state.settings[seedKey] ?? (42 + pi * 95);
-      toast(`Rendering Paper ${paper}\u2026`, "");
+      const seed = paperSeed(paper);
+      toast(`Rendering Paper ${paper} (${pi + 1}/${papers.length})\u2026`, "");
 
       _renderedPapers[paper] = await materializePaper(paper, seed, enabledBank, enabledOrder, meta);
       setProgress((pi + 1) / papers.length * 100);
@@ -2637,11 +2663,10 @@ function sanitizeFilename(s) {
   return String(s).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "question_set";
 }
 
-// If more than one paper is enabled, ask which one to export via a small popover;
-// if exactly one is enabled, use it immediately with no extra prompt.
+// If the exam has more than one paper, ask which one to export via a small
+// popover; with a single paper, use it immediately with no extra prompt.
 function chooseExportPaper(triggerEl, onChosen) {
-  const papers = state.settings.papers || [];
-  if (papers.length === 0) { toast("No papers selected — enable at least one paper (A/B/C) first", "error"); return; }
+  const papers = paperLetters();
   if (papers.length === 1) { onChosen(papers[0]); return; }
   openQtiPaperPopover(triggerEl, papers, onChosen);
 }
@@ -2669,14 +2694,14 @@ function openQtiPaperPopover(triggerEl, papers, onChosen) {
   pop.appendChild(label);
 
   const row = document.createElement("div");
-  row.style.cssText = "display:flex;gap:6px";
+  row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;max-width:264px";
   for (const paper of papers) {
     const btn = document.createElement("button");
     btn.type = "button";
     // Note: deliberately not the .btn.btn-secondary class — that's styled
     // (white text, translucent white background) for the dark toolbar, and
     // would be invisible against this popover's white background.
-    btn.style.cssText = "flex:1;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
+    btn.style.cssText = "flex:1 1 72px;padding:5px 10px;background:#1e3a5f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px";
     btn.textContent = `Paper ${paper}`;
     btn.addEventListener("click", () => {
       closePopover();
@@ -2784,13 +2809,7 @@ async function exportQtiForPaper(paper, qidFilter, filenameHint) {
     if (!confirm(`${mcCount} multiple-choice questions is not divisible by 5.\nAnswer-position balancing requires a multiple of 5.\nContinue anyway?`)) return;
   }
   const meta = { ...state.settings, numQuestions: enabledOrder.length };
-  // Matches doRenderAll's exact fallback formula (state.settings.papers, indexed
-  // by position) so an export always reuses the same seed as the actually
-  // rendered paper — a fixed "?? 42" here would disagree with Render All for
-  // any paper other than whichever one happens to render first.
-  const papers = state.settings.papers || ["A"];
-  const paperIndex = Math.max(0, papers.indexOf(paper));
-  const seed = state.settings[`seed${paper}`] ?? (42 + paperIndex * 95);
+  const seed = paperSeed(paper);
 
   toast(`Materializing Paper ${paper} for QTI export…`, "");
   let data;
@@ -2852,15 +2871,18 @@ function bindSettings() {
       updatePreviewSeedLabel();
     });
   });
-  ["A","B","C"].forEach(p => {
-    const cb = document.getElementById(`paper-check-${p}`);
-    if (!cb) return;
-    cb.addEventListener("change", () => {
-      if (cb.checked) { if (!state.settings.papers.includes(p)) state.settings.papers.push(p); }
-      else state.settings.papers = state.settings.papers.filter(x => x !== p);
+  const papersEl = document.getElementById("setting-num-papers");
+  if (papersEl) {
+    papersEl.addEventListener("change", () => {
+      const n = parseInt(papersEl.value, 10);
+      // A blank or junk entry keeps the current count rather than silently
+      // collapsing the exam to a single paper.
+      if (Number.isFinite(n)) state.settings.numPapers = clampPaperCount(n);
+      papersEl.value = paperCount();   // snap the field back to what was stored
+      syncSeedInputs();
       debounceSave();
     });
-  });
+  }
   const chaptersEl = document.getElementById("ai-textbook-chapters");
   if (chaptersEl) {
     chaptersEl.addEventListener("input", async () => {
@@ -2911,11 +2933,26 @@ function applySettingsToUI() {
   set("setting-seed-a",   s.seedA);
   set("setting-seed-b",   s.seedB);
   set("setting-seed-c",   s.seedC);
-  ["A","B","C"].forEach(p => {
-    const cb = document.getElementById(`paper-check-${p}`);
-    if (cb) cb.checked = s.papers.includes(p);
-  });
+  const papersEl = document.getElementById("setting-num-papers");
+  if (papersEl) papersEl.value = paperCount();
+  syncSeedInputs();
   syncQsPromptPopover();
+}
+
+// Show a seed box only for a paper that is actually generated. Papers past C
+// get no box at all — paperSeed() derives their seed from their position —
+// so the hint says which letters that covers.
+function syncSeedInputs() {
+  const n = paperCount();
+  document.querySelectorAll("#top-bar label[data-seed-paper]").forEach(el => {
+    const index = el.dataset.seedPaper.charCodeAt(0) - 65;
+    el.style.display = index < n ? "" : "none";
+  });
+  const hint = document.getElementById("seed-derived-hint");
+  if (hint) {
+    hint.style.display = n > 3 ? "" : "none";
+    hint.textContent = n > 4 ? `D\u2013${String.fromCharCode(64 + n)}: auto` : "D: auto";
+  }
 }
 
 // ── Resizer ────────────────────────────────────────────────────────────────
@@ -4363,7 +4400,7 @@ main();
 <div id="render-overlay">
   <div id="render-overlay-hdr">
     <span>📄 Rendered Exam</span>
-    <div id="render-tabs" style="display:flex;gap:6px"></div>
+    <div id="render-tabs" style="display:flex;flex-wrap:wrap;gap:6px"></div>
     <div style="display:flex;gap:6px;margin-left:auto">
       <button class="btn btn-secondary" id="btn-download-md" style="font-size:12px">⬇ Download MD</button>
       <button class="btn btn-secondary" id="btn-download-pdf" style="font-size:12px">🖨 Print / PDF</button>

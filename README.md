@@ -11,7 +11,7 @@ A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (a
 - **30 pre-loaded PHYS 1020 questions** — units, kinematics, Newton's laws, energy, momentum, rotation, SHM, fluids, thermodynamics
 - **CodeMirror editors** — syntax-highlighted Jinja2 template and Python generator editors per question
 - **Live preview** — renders each question with MathJax math typesetting via Pyodide
-- **Multi-paper support** — generate papers A, B, C with different seeds; balanced answer-position distribution
+- **Multi-paper support** — set how many randomized papers you want (1 to 26: A, B, C, …), each with its own seed; balanced answer-position distribution
 - **Export Markdown** — download ZIP of `exam_A.md`, `exam_B.md`, etc.
 - **Export ZIP** — download full Python project (render.py + questions/) for offline use
 - **Import ZIP** — load questions from a ZIP archive
@@ -23,8 +23,8 @@ A **privacy-first, single-page in-browser exam authoring tool** for PHYS 1020 (a
 1. Open https://wdconinc.github.io/question-forge/ — Pyodide loads in the browser (~30 s first time)
 2. Click a question in the sidebar to edit its Jinja2 template and Python generator
 3. Click **▶ Preview** to run the question and see the rendered output
-4. Adjust seeds for papers A/B/C in the top bar
-5. Click **▶ Render All** to generate all enabled papers
+4. Set **Papers** in the top bar to the number of randomizations you need; adjust the per-paper seeds beside it (papers past C take a seed derived from their position)
+5. Click **▶ Render All** to generate every paper
 6. Click **⬇ Export MD** to download exam Markdown files
 7. Click **⬇ Export ZIP** to download the full Python project
 
