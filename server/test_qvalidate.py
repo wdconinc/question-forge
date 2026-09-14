@@ -538,12 +538,13 @@ class TestChatTurnContract(unittest.TestCase):
         self.addCleanup(setattr, self.main, "_gemini_round", self._real_round)
 
     def _req(self, **kw):
-        base = dict(
-            messages=[self.main.ChatMessage(role="user", content="Create 30 numerical entry questions.")],
-            textbook_catalog="=== TEXTBOOK CATALOG ===\n  Ch 5. Electric Charges",
-        )
-        base.update(kw)
-        return self.main.ChatRequest(**base)
+        return self.main.ChatRequest(**{
+            "messages": [
+                self.main.ChatMessage(role="user", content="Create 30 numerical entry questions."),
+            ],
+            "textbook_catalog": "=== TEXTBOOK CATALOG ===\n  Ch 5. Electric Charges",
+            **kw,
+        })
 
     # -- _emit_tool_calls reporting ----------------------------------------
 
