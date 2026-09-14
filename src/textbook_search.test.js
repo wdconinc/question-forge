@@ -5,6 +5,7 @@ import {
   searchTextbook,
   formatSectionsForPrompt,
   buildCatalog,
+  chapterSectionIds,
   MAX_CONTEXT_CHARS,
   MAX_SECTIONS,
 } from "./textbook_search.js";
@@ -316,13 +317,26 @@ test("buildCatalog lists chapters with their section ranges", () => {
   assert.match(out, /\[book-b\] Book B/);
 });
 
-test("buildCatalog narrows to pinned chapters and says so", () => {
+test("buildCatalog narrows to books/chapters with a selected section and says so", () => {
   const { files } = makeFixture();
-  const out = buildCatalog(files["manifest.json"], { books: ["book-a"], chapters: [2] });
-  assert.match(out, /Ch 2\. Waves/);
-  assert.doesNotMatch(out, /Ch 1\. Mechanics/);
-  assert.match(out, /pinned to chapters 2/);
+  // book-a chapter 1 "Mechanics" has 3 sections (1.0, 1.1, 1.2); only pinning
+  // 1.0 leaves the chapter listed but flagged partial. Chapter 2 "Waves" (2.0,
+  // 2.1) has nothing pinned, so it drops out entirely -- same as the old
+  // flat chapter pin's on/off behaviour, just per book and per section now.
+  const out = buildCatalog(files["manifest.json"], { books: ["book-a"], sections: { "book-a": ["1.0"] } });
+  assert.match(out, /Ch 1\. Mechanics.*limited to selected sections/);
+  assert.doesNotMatch(out, /Ch 2\. Waves/);
+  assert.match(out, /limited to a hand-picked subset/);
   assert.doesNotMatch(out, /Book B/);
+});
+
+test("buildCatalog does not flag a chapter that is fully selected", () => {
+  const { files } = makeFixture();
+  const out = buildCatalog(files["manifest.json"], { sections: { "book-a": ["1.0", "1.1", "1.2"] } });
+  assert.match(out, /Ch 1\. Mechanics \(3 sections/);
+  assert.doesNotMatch(out, /Ch 1\..*limited to selected sections/);
+  // book-b carries no entry in the scope at all, so it stays fully unrestricted.
+  assert.match(out, /Ch 1\. Calculus \(2 sections/);
 });
 
 test("the context ceiling is a real number other modules can rely on", () => {
@@ -330,34 +344,47 @@ test("the context ceiling is a real number other modules can rely on", () => {
   assert.ok(MAX_CONTEXT_CHARS > 0);
 });
 
-test("parseChapterSpec understands ranges, lists and whitespace", async () => {
-  const { parseChapterSpec } = await import("./textbook_search.js");
-  assert.deepEqual(parseChapterSpec("4-6, 9"), [4, 5, 6, 9]);
-  assert.deepEqual(parseChapterSpec(" 9 , 4 - 6 "), [4, 5, 6, 9]);
-  assert.deepEqual(parseChapterSpec("6-4"), [4, 5, 6], "reversed ranges still work");
-  assert.deepEqual(parseChapterSpec("3,3,3"), [3], "duplicates collapse");
+test("chapterSectionIds numbers from N.0 through N.(count-1)", () => {
+  assert.deepEqual(chapterSectionIds({ n: 4, sections: 3 }), ["4.0", "4.1", "4.2"]);
+  assert.deepEqual(chapterSectionIds({ n: 9, sections: 1 }), ["9.0"]);
 });
 
-test("parseChapterSpec treats garbage as no pin rather than an empty pin", async () => {
-  const { parseChapterSpec } = await import("./textbook_search.js");
-  // An empty list means "every chapter" downstream, which is the safe reading:
-  // a typo must not silently narrow retrieval to nothing.
-  assert.deepEqual(parseChapterSpec("chapters four to six"), []);
-  assert.deepEqual(parseChapterSpec(""), []);
-  assert.deepEqual(parseChapterSpec(null), []);
+test("sectionScope restricts a ranked query to the pinned sections", async () => {
+  const { corpus } = makeFixture();
+  // "friction" only lives in 1.2, which is outside this pin, so ranking must
+  // not reach into it -- and like a chapter pin that ranks nothing, this
+  // falls back to browsing the pinned section itself rather than returning
+  // nothing at all.
+  const excluded = await searchTextbook(
+    { query: "friction", books: ["book-a"], sectionScope: { "book-a": ["1.1"] } }, { corpus });
+  assert.equal(excluded.browsed, true);
+  assert.deepEqual(excluded.hits.map((h) => h.number), ["1.1"]);
+  // Widen the pin to include 1.2 and ranking finds it directly, no browse needed.
+  const included = await searchTextbook(
+    { query: "friction", books: ["book-a"], sectionScope: { "book-a": ["1.1", "1.2"] } }, { corpus });
+  assert.deepEqual(included.hits.map((h) => h.number), ["1.2"]);
+  assert.equal(included.browsed, false);
 });
 
-test("parseChapterSpec refuses to expand an absurd range", async () => {
-  const { parseChapterSpec } = await import("./textbook_search.js");
-  assert.deepEqual(parseChapterSpec("1-9999"), []);
+test("sectionScope hides an explicitly named section outside the pin", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook(
+    { section_ids: ["book-a:1.2"], sectionScope: { "book-a": ["1.1"] } }, { corpus });
+  assert.equal(r.hits.length, 0);
+  assert.deepEqual(r.missing, ["book-a:1.2"]);
 });
 
-test("formatChapterSpec round-trips through parseChapterSpec", async () => {
-  const { parseChapterSpec, formatChapterSpec } = await import("./textbook_search.js");
-  for (const spec of ["4-6, 9", "1", "1, 3, 5", "2-4, 7-9"]) {
-    assert.equal(formatChapterSpec(parseChapterSpec(spec)), spec);
-  }
-  // Two adjacent chapters stay a list; three or more collapse to a range.
-  assert.equal(formatChapterSpec([1, 2]), "1, 2");
-  assert.equal(formatChapterSpec([1, 2, 3]), "1-3");
+test("sectionScope alone (no query, no chapters) browses the pinned sections", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ sectionScope: { "book-a": ["1.1", "2.1"] } }, { corpus });
+  assert.equal(r.browsed, true);
+  assert.deepEqual(r.hits.map((h) => `${h.slug}:${h.number}`).sort(), ["book-a:1.1", "book-a:2.1"]);
+});
+
+test("a chapter request still respects another book's section pin", async () => {
+  const { corpus } = makeFixture();
+  // Ask for chapter 1 across both books, but book-a is pinned to just 1.2.
+  const r = await searchTextbook({ chapters: [1], sectionScope: { "book-a": ["1.2"] } }, { corpus });
+  assert.deepEqual(r.hits.map((h) => `${h.slug}:${h.number}`).sort(),
+    ["book-a:1.2", "book-b:1.1", "book-b:1.2"]);
 });

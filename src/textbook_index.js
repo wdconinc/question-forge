@@ -148,19 +148,29 @@ function compareNumbers(a, b) {
 /**
  * Rank sections of one book.
  *
+ * `chapters` and `sections` are independent filters and both may apply at
+ * once: `chapters` is the chapter-number pin a model may pass in a single
+ * tool call, `sections` is the section-id allow-list an instructor pinned for
+ * this book ahead of time (from the textbook-grounding tree). Either, both or
+ * neither may be set.
+ *
  * `minScore` is a floor, not a formality: returning the three least-bad
  * sections for a query the book does not cover is worse than returning nothing,
  * because the model treats whatever it is handed as evidence.  The caller falls
  * back to the chapter catalog when this comes back empty.
  */
 export function rankSections(query, index, opts = {}) {
-  const { topK = 5, chapters = null, minScore = 2.0 } = opts;
+  const { topK = 5, chapters = null, sections = null, minScore = 2.0 } = opts;
   const terms = tokenize(query);
   let scored = scoreBM25(terms, index, opts);
 
   if (chapters && chapters.length) {
     const wanted = new Set(chapters.map(Number));
     scored = scored.filter((s) => wanted.has(Number(s.section.ch)));
+  }
+  if (sections && sections.length) {
+    const wanted = new Set(sections);
+    scored = scored.filter((s) => wanted.has(s.id));
   }
 
   scored = scored

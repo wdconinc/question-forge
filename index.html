@@ -361,6 +361,35 @@
     .ai-prompt-section-body { margin-top: 4px; }
     .ai-prompt-section-body.collapsed { display: none; }
 
+    /* Textbook-grounding tree: Book > Chapter > Section, each independently
+       checkable. <details>/<summary> gives free nested collapse for what can
+       be 100+ chapter nodes; the native marker is swapped for a plain
+       triangle so it reads the same as the sidebar's expand/collapse. */
+    .tb-book { margin-bottom: 3px; }
+    .tb-book > summary, .tb-chapter > summary {
+      cursor: pointer; list-style: none; display: flex; align-items: center;
+      gap: 5px; font-size: 11px; color: #333; padding: 2px 0;
+    }
+    .tb-book > summary::-webkit-details-marker,
+    .tb-chapter > summary::-webkit-details-marker { display: none; }
+    .tb-book > summary::before, .tb-chapter > summary::before {
+      content: "▶"; font-size: 8px; color: #888; width: 9px; flex-shrink: 0;
+    }
+    .tb-book[open] > summary::before, .tb-chapter[open] > summary::before { content: "▼"; }
+    .tb-book > summary { font-weight: 700; }
+    .tb-chapters { margin-left: 15px; }
+    .tb-chapter { margin: 0; }
+    .tb-sections { margin-left: 15px; }
+    .tb-section {
+      display: flex; align-items: baseline; gap: 5px; font-size: 11px;
+      color: #444; padding: 1px 0 1px 9px; cursor: pointer;
+    }
+    .tb-section:hover, .tb-chapter > summary:hover, .tb-book > summary:hover { background: #f0f0f0; }
+    .tb-book input, .tb-chapter input, .tb-section input { margin: 0; accent-color: #f0ab00; flex-shrink: 0; }
+    .tb-meta { color: #999; font-size: 10px; }
+    .tb-empty, .tb-loading { color: #999; font-style: italic; font-size: 10px; padding: 2px 0 2px 9px; }
+    .tb-hidden { display: none !important; }
+
     /* Preview */
     #preview-panel { overflow-y: auto; background: white; }
     #preview-hdr {
@@ -616,13 +645,13 @@
     </div>
     <div class="ai-prompt-section-body collapsed" id="body-textbook">
       <div style="font-weight:400;color:#555;font-size:11px;margin-bottom:4px">
-        Books the AI may search when writing questions for the selected set:
+        Books, chapters and sections the AI may search when writing questions for the
+        selected set. Everything is in scope by default — uncheck a book, chapter or
+        section to exclude it.
       </div>
-      <div id="ai-textbook-books" style="max-height:120px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:4px 6px;background:#fafafa"></div>
-      <label style="font-weight:400;color:#555;font-size:11px;margin-top:8px">
-        <span>Limit to chapters (optional), e.g. 4-6, 9</span>
-        <input type="text" id="ai-textbook-chapters" placeholder="all chapters">
-      </label>
+      <input type="text" id="ai-textbook-filter" placeholder="Filter chapters &amp; sections…"
+        style="width:100%;box-sizing:border-box;font-size:11px;padding:3px 6px;margin-bottom:5px;border:1px solid #ccc;border-radius:4px">
+      <div id="ai-textbook-tree" style="max-height:260px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:4px 6px;background:#fafafa"></div>
       <div id="ai-textbook-credit" style="font-size:10px;color:#888;margin-top:6px;line-height:1.45"></div>
     </div>
   </div>
@@ -1652,46 +1681,22 @@ function syncQsPromptPopover() {
 // Textbook scope lives on the question set, not globally: "Midterm 1" is
 // chapters 1-8 and "Midterm 2" is 9-16, and they are different sets.
 async function syncTextbookPopover() {
-  const booksEl = document.getElementById("ai-textbook-books");
-  const chaptersEl = document.getElementById("ai-textbook-chapters");
+  const treeEl = document.getElementById("ai-textbook-tree");
+  const filterEl = document.getElementById("ai-textbook-filter");
   const creditEl = document.getElementById("ai-textbook-credit");
-  if (!booksEl || !chaptersEl) return;
+  if (!treeEl) return;
 
   const manifest = await _getTextbookManifest();
   if (!manifest) {
-    booksEl.innerHTML = '<div style="color:#999;font-style:italic;font-size:11px">' +
+    treeEl.innerHTML = '<div style="color:#999;font-style:italic;font-size:11px">' +
       'No textbook corpus found. Build it with <code>scripts/build_textbook_corpus.py</code> ' +
       '(see the README); the AI works without it.</div>';
     if (creditEl) creditEl.textContent = "";
     return;
   }
 
-  const set = state.questionSets.find(s => s.id === state.selectedSet);
-  const enabled = new Set(set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
-  booksEl.innerHTML = "";
-  for (const book of manifest.books) {
-    const row = document.createElement("label");
-    row.style.cssText = "display:flex;flex-direction:row;align-items:center;gap:5px;" +
-      "font-weight:400;font-size:11px;color:#333;margin:0 0 2px;cursor:pointer";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = enabled.has(book.slug);
-    cb.style.cssText = "margin:0;accent-color:#f0ab00";
-    cb.addEventListener("change", () => {
-      const target = state.questionSets.find(s => s.id === state.selectedSet);
-      if (!target) return;
-      const next = new Set(target.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
-      if (cb.checked) next.add(book.slug); else next.delete(book.slug);
-      target.textbookBooks = [...next];
-      debounceSave();
-    });
-    row.appendChild(cb);
-    row.appendChild(document.createTextNode(`${book.title} (${book.sections} sections)`));
-    booksEl.appendChild(row);
-  }
-
-  const { formatChapterSpec } = await import("./src/textbook_search.js");
-  chaptersEl.value = formatChapterSpec(set?.textbookChapters || []);
+  if (filterEl) filterEl.value = "";
+  renderTextbookTree(manifest);
 
   if (creditEl) {
     // CC BY-NC-SA requires the credit to travel with the text.
@@ -1699,6 +1704,312 @@ async function syncTextbookPopover() {
       '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>. ' +
       'Access for free at <a href="https://openstax.org" target="_blank" rel="noopener">openstax.org</a>.';
   }
+}
+
+// ── Textbook grounding tree (Book > Chapter > Section, each checkable) ─────
+//
+// A book's chapters and their section *counts* come free with the manifest,
+// which is why the tree renders instantly; section *titles* live in that
+// book's own index.json and are fetched lazily, the first time that book is
+// expanded (or, for the filter box, the first time it is searched) -- not
+// eagerly for all seven books on every popover open.
+
+function currentSet() {
+  return state.questionSets.find(s => s.id === state.selectedSet);
+}
+
+// Mirrors chapterSectionIds() in src/textbook_search.js. Duplicated (rather
+// than dynamically imported) so the tree can compute chapter/book tri-state
+// synchronously on first paint, with no async import to race against; both
+// sides implement the same numbering convention documented in
+// scripts/build_textbook_corpus.py:assign_numbers().
+function chapterSectionIds(ch) {
+  return Array.from({ length: ch.sections }, (_, i) => `${ch.n}.${i}`);
+}
+
+/**
+ * Explicit per-book section-id allow-list, or null for "whole book in scope".
+ *
+ * Normal tree edits never persist an empty array (setTextbookSectionsIncluded
+ * deletes the key instead), but this is the one place that reads
+ * `textbookSections` back out, so it normalizes `[]` the same way too --
+ * otherwise hand-edited or otherwise-produced state carrying `[]` would read
+ * as "nothing selected" here while searchTextbook's sectionAllowed() treats
+ * the same empty list as "unrestricted", rendering a book's tree as fully
+ * excluded while search still returns all of it.
+ */
+function textbookRestriction(set, book) {
+  const raw = set?.textbookSections && set.textbookSections[book.slug];
+  return raw && raw.length ? raw : null;
+}
+
+function textbookBookEnabled(book, set) {
+  const enabled = new Set(set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+  return enabled.has(book.slug);
+}
+
+function allTextbookSectionIds(book) {
+  return (book.chapters || []).flatMap(chapterSectionIds);
+}
+
+// `restriction` is only meaningful for a book that is actually enabled: a
+// disabled book has no `textbookSections` entry either (both collapse to the
+// same "no entry" storage), so `bookEnabled` must be checked first or a
+// disabled book's chapters render as fully *checked* instead of excluded.
+function textbookChapterState(ch, restriction, bookEnabled) {
+  if (!bookEnabled) return "unchecked";
+  if (!restriction) return "checked";
+  const ids = chapterSectionIds(ch);
+  const have = ids.filter((id) => restriction.includes(id)).length;
+  if (have === 0) return "unchecked";
+  return have === ids.length ? "checked" : "indeterminate";
+}
+
+function textbookBookState(book, set) {
+  if (!textbookBookEnabled(book, set)) return "unchecked";
+  const restriction = textbookRestriction(set, book);
+  if (!restriction) return "checked";
+  const states = (book.chapters || []).map((ch) => textbookChapterState(ch, restriction, true));
+  if (states.every((s) => s === "checked")) return "checked";
+  if (states.every((s) => s === "unchecked")) return "unchecked";
+  return "indeterminate";
+}
+
+function applyTriState(cb, stateName) {
+  cb.checked = stateName === "checked";
+  cb.indeterminate = stateName === "indeterminate";
+}
+
+/**
+ * Include or exclude `ids` (within one book) from the set's textbook scope.
+ *
+ * Collapses back to the minimal representation on every edit: a book that
+ * ends up fully selected drops its `textbookSections` entry entirely (so "no
+ * entry" stays the one spelling of "everything"), and a book that ends up
+ * with nothing selected is removed from `textbookBooks` instead of being kept
+ * around as "enabled but empty".
+ */
+function setTextbookSectionsIncluded(set, book, ids, included) {
+  const slug = book.slug;
+  const total = allTextbookSectionIds(book);
+  const existing = set.textbookSections && set.textbookSections[slug];
+  // No entry means two different things depending on whether the book is
+  // currently enabled at all: "everything" for an enabled book, "nothing yet"
+  // for a disabled one. Only the former should seed the starting set with
+  // every section -- otherwise checking one chapter on a disabled book would
+  // silently include the rest of the book too.
+  const current = new Set(existing || (textbookBookEnabled(book, set) ? total : []));
+  for (const id of ids) { if (included) current.add(id); else current.delete(id); }
+
+  const enabled = new Set(set.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS);
+  if (!set.textbookSections) set.textbookSections = {};
+
+  if (current.size === 0) {
+    delete set.textbookSections[slug];
+    enabled.delete(slug);
+  } else if (current.size === total.length) {
+    delete set.textbookSections[slug];
+    enabled.add(slug);
+  } else {
+    set.textbookSections[slug] = total.filter((id) => current.has(id));
+    enabled.add(slug);
+  }
+  set.textbookBooks = [...enabled];
+}
+
+function renderTextbookTree(manifest) {
+  const treeEl = document.getElementById("ai-textbook-tree");
+  const set = currentSet();
+  treeEl.innerHTML = "";
+  for (const book of manifest.books) {
+    treeEl.appendChild(renderTextbookBookNode(book, set));
+  }
+}
+
+function renderTextbookBookNode(book, set) {
+  const details = document.createElement("details");
+  details.className = "tb-book";
+  details.dataset.slug = book.slug;
+  const initiallyOpen = textbookBookState(book, set) !== "unchecked";
+  details.open = initiallyOpen;
+
+  const summary = document.createElement("summary");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  applyTriState(cb, textbookBookState(book, set));
+  cb.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", () => {
+    const target = currentSet();
+    if (!target) return;
+    setTextbookSectionsIncluded(target, book, allTextbookSectionIds(book), cb.checked);
+    debounceSave();
+    refreshTextbookTreeStates();
+  });
+  summary.appendChild(cb);
+  summary.appendChild(document.createTextNode(` ${book.title} `));
+  const meta = document.createElement("span");
+  meta.className = "tb-meta";
+  meta.textContent = `${(book.chapters || []).length} ch · ${book.sections} sec`;
+  summary.appendChild(meta);
+  details.appendChild(summary);
+
+  const chaptersEl = document.createElement("div");
+  chaptersEl.className = "tb-chapters";
+  for (const ch of book.chapters || []) chaptersEl.appendChild(renderTextbookChapterNode(book, ch, set));
+  details.appendChild(chaptersEl);
+
+  details.addEventListener("toggle", () => { if (details.open) ensureTextbookBookLoaded(book); });
+  if (initiallyOpen) ensureTextbookBookLoaded(book);
+
+  return details;
+}
+
+function renderTextbookChapterNode(book, ch, set) {
+  const details = document.createElement("details");
+  details.className = "tb-chapter";
+  details.dataset.chapter = ch.n;
+
+  const summary = document.createElement("summary");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  applyTriState(cb, textbookChapterState(ch, textbookRestriction(set, book), textbookBookEnabled(book, set)));
+  cb.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", () => {
+    const target = currentSet();
+    if (!target) return;
+    setTextbookSectionsIncluded(target, book, chapterSectionIds(ch), cb.checked);
+    debounceSave();
+    refreshTextbookTreeStates();
+  });
+  summary.appendChild(cb);
+  summary.appendChild(document.createTextNode(` Ch ${ch.n}. ${ch.title} `));
+  const meta = document.createElement("span");
+  meta.className = "tb-meta";
+  meta.textContent = `${ch.sections} sec`;
+  summary.appendChild(meta);
+  details.appendChild(summary);
+
+  const sectionsEl = document.createElement("div");
+  sectionsEl.className = "tb-sections";
+  sectionsEl.innerHTML = '<div class="tb-loading">Loading sections…</div>';
+  details.appendChild(sectionsEl);
+  return details;
+}
+
+function renderTextbookSectionNode(book, rec, set) {
+  const row = document.createElement("label");
+  row.className = "tb-section";
+  row.dataset.search = String(rec.t || "").toLowerCase();
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.dataset.id = rec.id;
+  const restriction = textbookRestriction(set, book);
+  cb.checked = textbookBookEnabled(book, set) && (!restriction || restriction.includes(rec.id));
+  cb.addEventListener("change", () => {
+    const target = currentSet();
+    if (!target) return;
+    setTextbookSectionsIncluded(target, book, [rec.id], cb.checked);
+    debounceSave();
+    refreshTextbookTreeStates();
+  });
+  row.appendChild(cb);
+  row.appendChild(document.createTextNode(` ${rec.id} ${rec.t}`));
+  return row;
+}
+
+/** Fetch `book`'s index.json (once) and fill in its chapters' real section titles. */
+async function ensureTextbookBookLoaded(book) {
+  const details = document.querySelector(`.tb-book[data-slug="${CSS.escape(book.slug)}"]`);
+  if (!details || details.dataset.loaded === "1") return;
+  details.dataset.loaded = "1";
+
+  let index;
+  try {
+    const corpus = await _getTextbookCorpus();
+    index = await corpus.index(book.slug);
+  } catch (e) {
+    details.querySelectorAll(".tb-sections").forEach((el) => {
+      el.innerHTML = `<div class="tb-empty">Section titles unavailable (${escHtml(e.message)})</div>`;
+    });
+    return;
+  }
+
+  const byChapter = new Map();
+  for (const rec of index.sections || []) {
+    if (!byChapter.has(rec.ch)) byChapter.set(rec.ch, []);
+    byChapter.get(rec.ch).push(rec);
+  }
+  const set = currentSet();
+  details.querySelectorAll(".tb-chapter").forEach((chEl) => {
+    const chNum = Number(chEl.dataset.chapter);
+    const secs = (byChapter.get(chNum) || [])
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+    const body = chEl.querySelector(".tb-sections");
+    body.innerHTML = "";
+    if (!secs.length) {
+      body.innerHTML = '<div class="tb-empty">(no section data)</div>';
+      return;
+    }
+    for (const rec of secs) body.appendChild(renderTextbookSectionNode(book, rec, set));
+  });
+}
+
+/** Re-derive every checkbox's checked/indeterminate state in place, with no
+ * DOM teardown -- preserves expand/collapse state and avoids re-fetching. */
+function refreshTextbookTreeStates() {
+  const manifest = _textbookManifest;
+  const set = currentSet();
+  const treeEl = document.getElementById("ai-textbook-tree");
+  if (!manifest || !treeEl) return;
+  treeEl.querySelectorAll(".tb-book").forEach((bookEl) => {
+    const book = manifest.books.find((b) => b.slug === bookEl.dataset.slug);
+    if (!book) return;
+    const bcb = bookEl.querySelector(":scope > summary > input[type=checkbox]");
+    if (bcb) applyTriState(bcb, textbookBookState(book, set));
+    const restriction = textbookRestriction(set, book);
+    const bookEnabled = textbookBookEnabled(book, set);
+    bookEl.querySelectorAll(".tb-chapter").forEach((chEl) => {
+      const ch = (book.chapters || []).find((c) => c.n === Number(chEl.dataset.chapter));
+      const ccb = chEl.querySelector(":scope > summary > input[type=checkbox]");
+      if (ccb && ch) applyTriState(ccb, textbookChapterState(ch, restriction, bookEnabled));
+      chEl.querySelectorAll(".tb-section input[type=checkbox]").forEach((scb) => {
+        scb.checked = bookEnabled && (!restriction || restriction.includes(scb.dataset.id));
+      });
+    });
+  });
+}
+
+/** Text filter over chapter/section titles: hides non-matches, auto-expands matches. */
+async function filterTextbookTree(query) {
+  const manifest = await _getTextbookManifest();
+  const treeEl = document.getElementById("ai-textbook-tree");
+  if (!manifest || !treeEl) return;
+  const q = query.trim().toLowerCase();
+  if (q) {
+    // A cross-book text filter needs every book's section titles loaded, not
+    // just the ones the user happened to expand already.
+    await Promise.all(manifest.books.map((b) => ensureTextbookBookLoaded(b)));
+  }
+  treeEl.querySelectorAll(".tb-book").forEach((bookEl) => {
+    let bookMatch = !q;
+    bookEl.querySelectorAll(".tb-chapter").forEach((chEl) => {
+      const chTitle = (chEl.querySelector(":scope > summary")?.textContent || "").toLowerCase();
+      const chSelfMatch = !!q && chTitle.includes(q);
+      let sectionMatch = false;
+      chEl.querySelectorAll(".tb-section").forEach((secEl) => {
+        const match = !q || chSelfMatch || (secEl.dataset.search || "").includes(q);
+        secEl.classList.toggle("tb-hidden", !match);
+        if (match) sectionMatch = true;
+      });
+      const chVisible = !q || chSelfMatch || sectionMatch;
+      chEl.classList.toggle("tb-hidden", !chVisible);
+      if (q && chVisible) chEl.open = true;
+      if (chVisible) bookMatch = true;
+    });
+    bookEl.classList.toggle("tb-hidden", !bookMatch);
+    if (q && bookMatch) bookEl.open = true;
+  });
 }
 
 function renderSidebar() {
@@ -2975,15 +3286,9 @@ function bindSettings() {
       debounceSave();
     });
   }
-  const chaptersEl = document.getElementById("ai-textbook-chapters");
-  if (chaptersEl) {
-    chaptersEl.addEventListener("input", async () => {
-      const set = state.questionSets.find(s => s.id === state.selectedSet);
-      if (!set) return;
-      const { parseChapterSpec } = await import("./src/textbook_search.js");
-      set.textbookChapters = parseChapterSpec(chaptersEl.value);
-      debounceSave();
-    });
+  const textbookFilterEl = document.getElementById("ai-textbook-filter");
+  if (textbookFilterEl) {
+    textbookFilterEl.addEventListener("input", () => filterTextbookTree(textbookFilterEl.value));
   }
 
   // AI popover question-set prompt syncs with the selected set's prompt
@@ -3766,7 +4071,7 @@ const DEFAULT_TEXTBOOK_BOOKS = ["college-physics-2e"];
 function _activeSetTextbookScope() {
   const set = state.questionSets.find(s => s.id === state.selectedSet);
   const books = set?.textbookBooks ?? DEFAULT_TEXTBOOK_BOOKS;
-  return { books, chapters: set?.textbookChapters || [], disabled: books.length === 0 };
+  return { books, sections: set?.textbookSections || {}, disabled: books.length === 0 };
 }
 
 // The always-on catalog is chapter-level on purpose: seven books come to ~740
@@ -3793,7 +4098,12 @@ async function _resolveTextbookSearch(req) {
     max_sections: req.max_sections,
     // An explicit tool argument wins; otherwise the question set's own scope.
     books: req.books?.length ? req.books : scope.books,
-    chapters: req.chapters?.length ? req.chapters : scope.chapters,
+    // `chapters` is the model's own ad hoc argument for this one call;
+    // `sectionScope` is the persisted per-book pin from the textbook tree.
+    // Both narrow independently and searchTextbook enforces the pin on every
+    // path, so there is nothing to merge here.
+    chapters: req.chapters,
+    sectionScope: scope.sections,
   }, { corpus });
   console.log("[AI] textbook search:", req.query || (req.section_ids || []).join(","),
               "→", result.hits.map(h => `${h.slug}:${h.number}`).join(", ") || "(no match)");
