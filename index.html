@@ -2059,9 +2059,10 @@ function selectQuestion(qid, { autoPreview = true } = {}) {
   if (typeSelect) typeSelect.value = q.type || "multiple_choice";
 
   // setValue() above fires the editors' own "change" handlers, which schedule
-  // a debounced auto-preview \u2014 cancel that so it can't fire late and clobber
-  // whatever this call decides to show instead.
-  cancelAutoPreview();
+  // a debounced auto-preview. Invalidate that AND any run already in flight
+  // for the previous question, so neither can land late and clobber whatever
+  // this call (or a caller writing its own message right after it) shows.
+  invalidatePendingPreview();
   lastPreviewError = null;   // clear stale error from previous question
   if (autoPreview && pyodideReady) {
     doPreview();
@@ -2222,6 +2223,15 @@ function scheduleAutoPreview(delay = 600) {
 
 function cancelAutoPreview() {
   clearTimeout(previewTimer);
+}
+
+// Cancels any pending debounced run AND disowns any run already in flight —
+// bumping previewRunId makes its eventual resolution a no-op (see the runId
+// checks in doPreview) — so a caller about to write its own message into
+// #preview-content can't have it clobbered once that older run resolves.
+function invalidatePendingPreview() {
+  cancelAutoPreview();
+  previewRunId++;
 }
 
 async function doPreview() {
