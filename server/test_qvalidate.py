@@ -627,6 +627,46 @@ class TestChatTurnContract(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "error")
         self.assertIn("output limit", events[-1]["message"])
 
+    def test_max_tokens_usage_is_surfaced_in_the_error(self):
+        """The reasoning/reply token split must reach the user, not just the
+        server log -- that split is exactly what turns "the model broke" into
+        a diagnosable "reasoning ate the budget, ask for fewer questions"."""
+        async def round_(model, system_text, contents, tools, out):
+            out["finish"] = "MAX_TOKENS"
+            out["usage"] = {
+                "promptTokenCount": 1500,
+                "thoughtsTokenCount": 8192,
+                "candidatesTokenCount": 0,
+                "totalTokenCount": 9692,
+            }
+            return
+            yield  # unreachable; presence of `yield` makes this an async generator
+        self.main._gemini_round = round_
+        events = _drain(self.main._stream_gemini("gemini-2.5-flash", self._req()))
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("8192", events[-1]["message"])
+        self.assertIn("1500", events[-1]["message"])
+
+    def test_empty_turn_message_without_usage_still_explains_itself(self):
+        """Some Gemini previews omit usageMetadata even with thinking on --
+        the message must degrade gracefully, not KeyError or print "None"."""
+        msg = self.main._empty_turn_message("MAX_TOKENS", {})
+        self.assertIn("output limit", msg)
+        self.assertNotIn("None", msg)
+
+    def test_generation_config_caps_the_thinking_budget(self):
+        """Gemini spends reasoning tokens out of the same maxOutputTokens
+        ceiling as the reply, so the thinking budget must sit strictly below
+        the output ceiling -- otherwise reasoning alone can hit MAX_TOKENS
+        with nothing left over for the reply (or the tool call) it was
+        supposed to produce."""
+        config = self.main._gemini_generation_config(0.7)
+        self.assertLess(
+            config["thinkingConfig"]["thinkingBudget"],
+            config["maxOutputTokens"],
+            "the thinking budget must leave headroom for the actual reply",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
