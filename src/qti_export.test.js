@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   sanitizeIdentifier,
+  versionedQid,
+  versionedTitle,
+  groupVersionsByQid,
   buildItemNode,
   buildObjectBankXml,
   buildManifestXml,
@@ -227,4 +230,95 @@ test("buildQtiPackage disambiguates two qids that sanitize to the same identifie
   const idMatches = [...blob.__files["questestinterop.xml"].matchAll(/<item ident="([^"]+)"/g)].map(m => m[1]);
   assert.equal(idMatches.length, 2);
   assert.equal(new Set(idMatches).size, 2);
+});
+
+// ── Seed-versioned export (one item per question per paper seed) ─────────────
+
+test("versionedQid/versionedTitle suffix only when a seed is present", () => {
+  assert.equal(versionedQid("q01_units", 42), "q01_units__seed42");
+  assert.equal(versionedTitle("Units", 42), "Units (seed 42)");
+  // No seed means "not one version among several" — a single-paper export must
+  // keep the plain qid and title it had before versioning existed.
+  assert.equal(versionedQid("q01_units", undefined), "q01_units");
+  assert.equal(versionedTitle("Units", undefined), "Units");
+  assert.equal(versionedQid("q01_units", null), "q01_units");
+  assert.equal(versionedTitle("Units", null), "Units");
+  // Seed 0 is a real seed, not an absent one.
+  assert.equal(versionedQid("q01_units", 0), "q01_units__seed0");
+  assert.equal(versionedTitle("Units", 0), "Units (seed 0)");
+});
+
+test("groupVersionsByQid gathers every version of a question, keeping first-seen qid order", () => {
+  // Papers are materialized one at a time, so versions arrive paper-major:
+  // all of paper A, then all of paper B. The bank needs them question-major.
+  const input = [
+    { qid: "q01", seed: 42 }, { qid: "q02", seed: 42 },
+    { qid: "q01", seed: 137 }, { qid: "q02", seed: 137 },
+  ];
+  assert.deepEqual(groupVersionsByQid(input), [
+    { qid: "q01", seed: 42 }, { qid: "q01", seed: 137 },
+    { qid: "q02", seed: 42 }, { qid: "q02", seed: 137 },
+  ]);
+});
+
+test("groupVersionsByQid leaves a single-version list in its original order", () => {
+  const input = [{ qid: "q03" }, { qid: "q01" }, { qid: "q02" }];
+  assert.deepEqual(groupVersionsByQid(input).map(q => q.qid), ["q03", "q01", "q02"]);
+});
+
+test("buildItemNode stamps the seed on both the ident and the library title", async () => {
+  const question = {
+    qid: "q02_kinematics_1d",
+    title: "Kinematics 1D",
+    seed: 137,
+    question: "A car accelerates.",
+    choices: ["1", "2", "3", "4", "5"],
+    answer: "a",
+  };
+  const { id, node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.equal(id, "q02_kinematics_1d__seed137");
+  assert.match(serialize(node), /<item ident="q02_kinematics_1d__seed137" title="Kinematics 1D \(seed 137\)"/);
+});
+
+test("buildItemNode (numerical) stamps the seed too", async () => {
+  const question = { qid: "q_numeric", title: "Final speed", seed: 271, type: "numerical", question: "x", answer: 12.3, tolerance: 0.5 };
+  const { id, node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.equal(id, "q_numeric__seed271");
+  assert.match(serialize(node), /title="Final speed \(seed 271\)"/);
+});
+
+test("buildItemNode leaves a seedless question's ident and title exactly as before", async () => {
+  const question = { qid: "q01_units", title: "Units", question: "x", choices: ["1", "2", "3", "4", "5"], answer: "a" };
+  const { id, node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.equal(id, "q01_units");
+  assert.match(serialize(node), /<item ident="q01_units" title="Units"/);
+  assert.ok(!serialize(node).includes("seed"), "a single-paper export must not mention a seed");
+});
+
+test("buildQtiPackage lands every version of a question contiguously, with distinct seed-tagged idents", async () => {
+  class FakeZip {
+    constructor() { this.files = {}; }
+    file(path, content) { this.files[path] = content; return this; }
+    async generateAsync() { return { __files: this.files }; }
+  }
+  const mc = { question: "x", choices: ["1", "2", "3", "4", "5"], answer: "a" };
+  // Paper-major input, as exportQtiForPapers builds it.
+  const questions = [
+    { qid: "q01", title: "Units", seed: 42, ...mc },
+    { qid: "q02", title: "Kinematics", seed: 42, ...mc },
+    { qid: "q01", title: "Units", seed: 137, ...mc },
+    { qid: "q02", title: "Kinematics", seed: 137, ...mc },
+  ];
+  const { blob } = await buildQtiPackage(questions, { latexToMathML: stubLatexToMathML, zipFactory: FakeZip });
+  const xml = blob.__files["questestinterop.xml"];
+  assertWellFormedXmlFragment(xml);
+  const idents = [...xml.matchAll(/<item ident="([^"]+)"/g)].map(m => m[1]);
+  // Contiguous per question — that adjacency is what makes selecting a whole
+  // group into one D2L question pool a single drag.
+  assert.deepEqual(idents, ["q01__seed42", "q01__seed137", "q02__seed42", "q02__seed137"]);
+  // Seed suffixes keep the idents distinct on their own, so none of them falls
+  // back to sanitizeIdentifier's opaque "_2" collision suffix.
+  assert.ok(!idents.some(id => /_\d+$/.test(id.replace(/__seed-?\d+$/, ""))), "no opaque collision suffixes");
+  assert.match(xml, /title="Units \(seed 42\)"/);
+  assert.match(xml, /title="Units \(seed 137\)"/);
 });

@@ -83,6 +83,53 @@ export function sanitizeIdentifier(rawId, usedIds) {
   return id;
 }
 
+// ── Seed-versioned identity ──────────────────────────────────────────────────
+
+// A question carrying a `seed` is one randomized *version* of that question:
+// the same generator re-run against a different paper seed, so it asks the same
+// thing with different numbers. Every version is exported as its own bank item,
+// which is what lets an instructor drop all versions of one question into a
+// single D2L question pool and have each student draw a different one.
+//
+// The suffix goes at the END of both the title and the identifier so all
+// versions of a question share a prefix: they stay adjacent under the bank's
+// import order AND under an alphabetical sort of the Question Library, so
+// selecting the whole group is one drag either way. Suffixing the identifier
+// too keeps versions from colliding on the same qid and picking up
+// sanitizeIdentifier's opaque "_2"/"_3" fallback instead.
+//
+// A seed of null/undefined means "not a version" — a single-paper export, whose
+// items keep the plain qid and title they have always had.
+
+export function versionedQid(qid, seed) {
+  return seed === null || seed === undefined ? String(qid ?? "") : `${qid}__seed${seed}`;
+}
+
+export function versionedTitle(title, seed) {
+  return seed === null || seed === undefined ? String(title ?? "") : `${title} (seed ${seed})`;
+}
+
+// Groups every version of the same question together, in the order each qid was
+// first seen. A single-paper export (one version per qid) comes back in exactly
+// its input order, so this is a no-op there.
+export function groupVersionsByQid(questions) {
+  const groups = new Map();
+  for (const q of questions) {
+    const key = String(q.qid ?? "");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(q);
+  }
+  return [...groups.values()].flat();
+}
+
+// Resolves the <item> ident/title pair shared by every question type.
+function itemIdentity(question, usedIds) {
+  return {
+    id: sanitizeIdentifier(versionedQid(question.qid, question.seed), usedIds),
+    title: versionedTitle(question.title || question.qid, question.seed),
+  };
+}
+
 // ── Math-delimiter scanning ──────────────────────────────────────────────────
 // Matches this app's live MathJax config (index.html): inlineMath $...$ / \(...\),
 // plus MathJax 3's un-overridden defaults for displayMath $$...$$ / \[...\].
@@ -144,9 +191,11 @@ function mattext(html) {
 // ── QTI 1.2 <item> builder ───────────────────────────────────────────────────
 
 // question: either
-//   { qid, title?, question, choices: [5 strings], answer: "a".."e" }         (multiple choice)
+//   { qid, title?, seed?, question, choices: [5 strings], answer: "a".."e" }   (multiple choice)
 // or
-//   { qid, title?, type: "numerical", question, answer: number, tolerance: number, unit? }
+//   { qid, title?, seed?, type: "numerical", question, answer: number, tolerance: number, unit? }
+// An optional `seed` marks this as one randomized version among several and
+// suffixes both the ident and the title (see versionedQid/versionedTitle).
 // opts: { latexToMathML, usedIds?: Set, failures?: Array }
 // Returns an `el(...)` node (an <item>, not a full document — it's nested
 // inside the single combined <objectbank> built by buildObjectBankXml).
@@ -165,7 +214,7 @@ async function buildMultipleChoiceItemNode(question, opts) {
     throw new Error("buildItemNode requires opts.latexToMathML");
   }
 
-  const id = sanitizeIdentifier(question.qid, usedIds);
+  const { id, title } = itemIdentity(question, usedIds);
   const correctIdx = LETTERS.indexOf(question.answer);
   if (correctIdx === -1) {
     throw new Error(`buildItemNode: question ${question.qid} has invalid answer "${question.answer}"`);
@@ -201,7 +250,7 @@ async function buildMultipleChoiceItemNode(question, opts) {
     ]),
   ]);
 
-  return { id, node: el("item", { ident: id, title: question.title || question.qid }, [itemmetadata, presentation, resprocessing]) };
+  return { id, node: el("item", { ident: id, title }, [itemmetadata, presentation, resprocessing]) };
 }
 
 // Numeric fill-in-the-blank item: standard QTI 1.2 ASI response_num/render_fib,
@@ -222,7 +271,7 @@ async function buildNumericalItemNode(question, opts) {
     throw new Error("buildItemNode requires opts.latexToMathML");
   }
 
-  const id = sanitizeIdentifier(question.qid, usedIds);
+  const { id, title } = itemIdentity(question, usedIds);
   const answer = Number(question.answer);
   const tolerance = Number(question.tolerance ?? 0);
   if (!Number.isFinite(answer)) {
@@ -263,7 +312,7 @@ async function buildNumericalItemNode(question, opts) {
     ]),
   ]);
 
-  return { id, node: el("item", { ident: id, title: question.title || question.qid }, [itemmetadata, presentation, resprocessing]) };
+  return { id, node: el("item", { ident: id, title }, [itemmetadata, presentation, resprocessing]) };
 }
 
 // ── questestinterop.xml builder (one <objectbank> holding every item) ───────
@@ -336,9 +385,13 @@ export function buildManifestXml(bankId, opts = {}) {
 
 // ── Full package ──────────────────────────────────────────────────────────────
 
-// materializedQuestions: [{ qid, title?, question, topic?, difficulty?, ...
+// materializedQuestions: [{ qid, title?, seed?, question, topic?, difficulty?, ...
 //   (choices, answer) for multiple choice, or
 //   (type: "numerical", answer, tolerance, unit?) for numerical entry ]
+// May contain the same qid more than once — one entry per randomized version,
+// each with its own `seed`. Versions are regrouped so every version of a
+// question lands contiguously in the bank, ready to be selected as a block into
+// a D2L question pool.
 // opts: { latexToMathML, manifestId?, zipFactory? } — zipFactory defaults to
 // the browser global JSZip; tests inject a fake to avoid needing a real
 // dependency.
@@ -351,7 +404,7 @@ export async function buildQtiPackage(materializedQuestions, opts = {}) {
   const usedIds = new Set();
   const failures = [];
   const items = [];
-  for (const q of materializedQuestions) {
+  for (const q of groupVersionsByQid(materializedQuestions)) {
     const { id, node } = await buildItemNode(q, { latexToMathML, usedIds, failures });
     items.push({ id, node });
   }
