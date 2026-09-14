@@ -646,8 +646,20 @@ def parse_collection(path):
             name = _local(child)
             if name == "subcollection":
                 sub_title = _norm(child.findtext(MD + "title") or "")
-                book["chapters"].append({"title": sub_title, "modules": []})
-                walk(child.find(COL + "content"), book["chapters"][-1])
+                content = child.find(COL + "content")
+                nested = content is not None and any(
+                    _local(c) == "subcollection" for c in content
+                )
+                if nested:
+                    # A part/unit wrapper (e.g. "Thermodynamics" grouping
+                    # "Temperature and Heat", "The Second Law of
+                    # Thermodynamics", ...) -- not a chapter itself, so it
+                    # must not consume a chapter number or get indexed as an
+                    # empty one. Unwrap it and keep walking its real chapters.
+                    walk(content, chapter)
+                else:
+                    book["chapters"].append({"title": sub_title, "modules": []})
+                    walk(content, book["chapters"][-1])
             elif name == "module":
                 mid = child.get("document")
                 if not mid:
