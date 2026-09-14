@@ -248,6 +248,28 @@ test("versionedQid/versionedTitle suffix only when a seed is present", () => {
   assert.equal(versionedTitle("Units", 0), "Units (seed 0)");
 });
 
+test("a missing qid or title falls back the same way whether or not a seed is present", () => {
+  // Interpolating a nullish base straight into the suffix template used to bake
+  // the literal text "null"/"undefined" into the identifier, so a seeded export
+  // skipped the fallback an unseeded one applies. Missing is missing either way.
+  for (const missing of [null, undefined, ""]) {
+    assert.equal(sanitizeIdentifier(versionedQid(missing, undefined)), "q_item");
+    assert.equal(sanitizeIdentifier(versionedQid(missing, 42)), "q_item__seed42");
+    assert.ok(!versionedQid(missing, 42).includes("undefined"));
+    assert.ok(!versionedQid(missing, 42).includes("null"));
+    // A seed marker with nothing to prefix it should not carry a dangling space.
+    assert.equal(versionedTitle(missing, 42), "(seed 42)");
+    assert.equal(versionedTitle(missing, undefined), "");
+  }
+});
+
+test("an item built from a question with no qid still gets a usable ident", async () => {
+  const question = { question: "x", seed: 42, choices: ["1", "2", "3", "4", "5"], answer: "a" };
+  const { id, node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.equal(id, "q_item__seed42");
+  assert.ok(!serialize(node).includes("undefined"), "no literal 'undefined' may reach the XML");
+});
+
 test("groupVersionsByQid gathers every version of a question, keeping first-seen qid order", () => {
   // Papers are materialized one at a time, so versions arrive paper-major:
   // all of paper A, then all of paper B. The bank needs them question-major.

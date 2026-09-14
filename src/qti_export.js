@@ -68,11 +68,15 @@ export function serialize(node) {
 
 // ── Identifier sanitization ──────────────────────────────────────────────────
 
+// Stands in for a question with no usable qid at all. Shared with
+// versionedQid below so a seeded and an unseeded export fall back the same way.
+const FALLBACK_ID = "q_item";
+
 // Coerces a qid into a valid XML identifier (must start with a letter or
 // underscore) and disambiguates collisions against `usedIds`, if provided.
 export function sanitizeIdentifier(rawId, usedIds) {
   let id = String(rawId ?? "").replace(/[^A-Za-z0-9_.-]/g, "_");
-  if (!id) id = "q_item";
+  if (!id) id = FALLBACK_ID;
   else if (!/^[A-Za-z_]/.test(id)) id = "q_" + id;
   if (usedIds) {
     const base = id;
@@ -101,12 +105,20 @@ export function sanitizeIdentifier(rawId, usedIds) {
 // A seed of null/undefined means "not a version" — a single-paper export, whose
 // items keep the plain qid and title they have always had.
 
+// Both coerce their base BEFORE appending the suffix: interpolating a nullish
+// qid/title straight into the template would bake the literal text "null" or
+// "undefined" into the identifier, skipping the fallback the unseeded path
+// applies. A missing base is missing whether or not a seed is present.
+
 export function versionedQid(qid, seed) {
-  return seed === null || seed === undefined ? String(qid ?? "") : `${qid}__seed${seed}`;
+  const base = String(qid ?? "") || FALLBACK_ID;
+  return seed === null || seed === undefined ? base : `${base}__seed${seed}`;
 }
 
 export function versionedTitle(title, seed) {
-  return seed === null || seed === undefined ? String(title ?? "") : `${title} (seed ${seed})`;
+  const base = String(title ?? "");
+  if (seed === null || seed === undefined) return base;
+  return base ? `${base} (seed ${seed})` : `(seed ${seed})`;
 }
 
 // Groups every version of the same question together, in the order each qid was
