@@ -273,8 +273,11 @@ TOOLS = [
                 "Pass `query` with precise terminology (e.g. 'coefficient of kinetic "
                 "friction inclined plane'), or `section_ids` when the catalog already "
                 "tells you which sections you need (e.g. ['6.3','6.4']). Prefer "
-                "`section_ids` when you know them. You get ONE textbook lookup per "
-                "reply, so ask for everything you need in a single call."
+                "`section_ids` when you know them. Passing only `chapters` is also "
+                "valid and returns that chapter's sections in order. "
+                "You get ONE textbook lookup per reply — there is no second call, and "
+                "calling again after the results arrive does nothing — so ask for "
+                "everything you need in a single call."
             ),
             "parameters": {
                 "type": "object",
@@ -299,7 +302,11 @@ TOOLS = [
                     "chapters": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "Restrict the search to these chapter numbers.",
+                        "description": (
+                            "Restrict the search to these chapter numbers. On its own, "
+                            "with no `query` or `section_ids`, it returns the chapter's "
+                            "sections in order."
+                        ),
                     },
                     "include": {
                         "type": "array",
@@ -531,13 +538,32 @@ Current question ID: {qid}
         # drifted, and the client sends "" when the user has not edited it, so
         # whichever copy wins depends on whether they ever opened the textarea.
         # A dynamic block sidesteps the trap entirely.
+        if req.textbook_context.strip():
+            # The excerpts arrive as an anonymous block at the end of the prompt,
+            # not as a tool result attached to the call that asked for them, so
+            # nothing in the conversation tells the model its lookup happened.
+            # Left with "call search_textbook BEFORE authoring", it called again
+            # into a server that had already dropped the tool, and the turn ended
+            # with no text and no tool call at all.
+            lookup_rule = (
+                "- Your search_textbook lookup for "
+                f"{req.textbook_query.strip() or 'this turn'} has already run; its results are "
+                "in the TEXTBOOK EXCERPTS block below. That was this turn's one lookup and the\n"
+                "  tool is gone, so do NOT call search_textbook again — author the questions now\n"
+                "  from what you were given. If the excerpts do not cover what was asked, say so\n"
+                "  plainly instead of searching again or inventing content."
+            )
+        else:
+            lookup_rule = (
+                "- Call search_textbook BEFORE authoring a new question, and base the question on\n"
+                "  what comes back. You get one textbook lookup per reply, so request everything\n"
+                "  you need at once."
+            )
         prompt += f"""
 {req.textbook_catalog.strip()}
 
 Grounding rules:
-- Call search_textbook BEFORE authoring a new question, and base the question on
-  what comes back. You get one textbook lookup per reply, so request everything
-  you need at once.
+{lookup_rule}
 - Use the book's own symbols, subscripts and unit conventions.
 - Match the difficulty and phrasing of that section's end-of-section problems.
   Never reproduce a textbook problem verbatim: parametrize the numbers and write
@@ -545,9 +571,8 @@ Grounding rules:
 - Set the question's `topic` to the section number and title, e.g.
   "6.3 - Centripetal Force".
 - In your chat reply, say which sections you used, e.g. "Grounded in 6.3, 6.4."
-  Cite ONLY sections whose text you were actually given. If the excerpts do not
-  cover what was asked, say so and search again with different terms rather than
-  inventing textbook content.
+  Cite ONLY sections whose text you were actually given. Never invent textbook
+  content or cite a section you were not shown.
 """
     if req.bank_summary.strip():
         prompt += f"""
@@ -1023,32 +1048,58 @@ async def _emit_tool_calls(
     function_calls: list[dict],
     req: ChatRequest,
     validation_warnings: dict[int, str],
+    outcome: dict,
 ) -> AsyncIterator[dict]:
     """Emit the (possibly fixed) tool calls as SSE tool_call events, handling
-    the get_question_bank / get_question round-trip requests."""
+    the get_question_bank / get_question round-trip requests.
+
+    `outcome` is filled in for the caller: "emitted" counts the tool_call events
+    actually sent, and "suppressed" collects the calls dropped because their
+    data is already inlined in the system prompt.  The caller needs both,
+    because a turn whose every call was suppressed produces no SSE events at
+    all — which the browser can only render as an empty reply.
+    """
+    outcome["emitted"] = 0
+    outcome["suppressed"] = []
     for i, fc in enumerate(function_calls):
         name = fc.get("name", "")
         args = fc.get("args", {})
         if name == "get_question_bank":
             if req.bank_summary.strip():
                 print("[chat] suppressing get_question_bank — bank_summary already provided", flush=True)
+                outcome["suppressed"].append(fc)
                 continue
             print("[chat] AI requested get_question_bank", flush=True)
+            outcome["emitted"] += 1
             yield {"data": json.dumps({"type": "tool_call", "tool": "get_question_bank"})}
             continue
         if name == "get_question":
             if req.requested_question_id.strip():
                 print("[chat] suppressing get_question — requested_question already provided", flush=True)
+                outcome["suppressed"].append(fc)
                 continue
             requested_id = args.get("question_id", "")
             print(f"[chat] AI requested get_question: {requested_id}", flush=True)
+            outcome["emitted"] += 1
             yield {"data": json.dumps({"type": "tool_call", "tool": "get_question", "question_id": requested_id})}
             continue
         if name == "search_textbook":
             if req.textbook_context.strip():
                 print("[chat] suppressing search_textbook — textbook_context already provided", flush=True)
+                outcome["suppressed"].append(fc)
                 continue
-            print(f"[chat] AI requested search_textbook: {str(args.get('query', ''))[:80]}", flush=True)
+            # Log every selector, not just `query`: a chapters-only or
+            # section_ids-only call logged as a bare "search_textbook:" is
+            # exactly the call that is hardest to explain after the fact.
+            print(
+                "[chat] AI requested search_textbook:"
+                f" query={str(args.get('query', ''))[:80]!r}"
+                f" sections={args.get('section_ids', [])}"
+                f" books={args.get('books', [])}"
+                f" chapters={args.get('chapters', [])}",
+                flush=True,
+            )
+            outcome["emitted"] += 1
             yield {"data": json.dumps({
                 "type": "tool_call",
                 "tool": "search_textbook",
@@ -1075,6 +1126,7 @@ async def _emit_tool_calls(
             payload["content"] = args["content"]
         if i in validation_warnings:
             payload["validation_warning"] = validation_warnings[i]
+        outcome["emitted"] += 1
         yield {"data": json.dumps(payload)}
 
 
@@ -1097,82 +1149,233 @@ def _excluded_tools(req: ChatRequest) -> set[str]:
     return excluded
 
 
+# ---------------------------------------------------------------------------
+# Continuing a turn the model spent asking for data it already had
+# ---------------------------------------------------------------------------
+# Dropping the tool from the declarations is not enough on its own: the data
+# arrives as an anonymous block appended to the system prompt, so nothing in the
+# conversation ties it to the call that asked for it, and both providers will
+# happily re-emit a call for a tool they can still see named in the prompt text.
+# When that is *all* a turn contains, the stream carries no text and no
+# tool_call — the browser has nothing to show but "(Empty response from AI)",
+# and the user's request is simply lost.  Answering the call in-band costs one
+# extra model call and turns that dead end into a finished turn.
+
+_SUPPRESSED_TOOL_ANSWERS = {
+    "get_question_bank": (
+        "The question bank is already in the system prompt, under "
+        "=== ALL QUESTIONS IN BANK ===."
+    ),
+    "get_question": (
+        "That question's template and generator are already in the system prompt, "
+        "under === REQUESTED QUESTION ===."
+    ),
+    "search_textbook": (
+        "This turn's textbook lookup already ran; its results are in the system prompt, "
+        "under === TEXTBOOK EXCERPTS ===. There is no second lookup this turn."
+    ),
+}
+
+MAX_CONTINUATIONS: int = int(os.environ.get("MAX_CONTINUATIONS", "1"))
+
+
+def _suppressed_tool_answer(name: str) -> str:
+    return (
+        _SUPPRESSED_TOOL_ANSWERS.get(name, "That data is already in the system prompt.")
+        + " Do not call this tool again. Carry out the user's request now, using what you have."
+    )
+
+
+def _empty_turn_message(finish: str) -> str:
+    """Explain a turn that produced no text and no tool call.
+
+    Gemini 2.5 counts reasoning tokens against the output budget, so a large
+    request ("create 30 questions") can exhaust it before a single visible token
+    is emitted.  That arrives as a 200 with an empty candidate, which is
+    otherwise indistinguishable from a bug in this server.
+    """
+    reason = (finish or "").upper()
+    if reason == "MAX_TOKENS":
+        return (
+            "The model hit its output limit before writing any reply — large requests can "
+            "spend the whole budget on internal reasoning. Ask for fewer questions at a time "
+            "(5–10 works well) and repeat."
+        )
+    if reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+        return f"The model stopped without replying (finish reason: {reason}). Try rephrasing the request."
+    if reason == "MALFORMED_FUNCTION_CALL":
+        return (
+            "The model tried to call a tool and produced a malformed call. Try again, or "
+            "ask for fewer questions at a time."
+        )
+    return (
+        "The model returned an empty response"
+        + (f" (finish reason: {reason})" if reason else "")
+        + ". Try again, or ask for fewer questions at a time."
+    )
+
+
+async def _gemini_round(
+    model: str,
+    system_text: str,
+    contents: list[dict],
+    tools: list[dict],
+    out: dict,
+) -> AsyncIterator[dict]:
+    """Stream one Gemini turn, yielding SSE events and reporting into `out`."""
+    body = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": contents,
+        "tools": tools,
+        "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+        "generationConfig": {"temperature": 0.7},
+    }
+    url = f"{GEMINI_BASE}/{model}:streamGenerateContent"
+    params = {"key": GOOGLE_API_KEY, "alt": "sse"}
+
+    async with (
+        httpx.AsyncClient(timeout=120) as client,
+        client.stream("POST", url, params=params, json=body) as resp,
+    ):
+        print(f"[chat] gemini status={resp.status_code}", flush=True)
+        if resp.status_code != 200:
+            err_text = (await resp.aread()).decode()
+            print(f"[chat] gemini error: {err_text[:500]}", flush=True)
+            out["failed"] = True
+            yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
+            return
+
+        async for line in resp.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw or raw == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            for candidate in chunk.get("candidates", []):
+                if candidate.get("finishReason"):
+                    out["finish"] = candidate["finishReason"]
+                parts = candidate.get("content", {}).get("parts", [])
+                for part in parts:
+                    if part.get("text"):
+                        out["n_text"] += 1
+                        yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
+                    if "functionCall" in part:
+                        out["function_calls"].append(part["functionCall"])
+
+
 async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
     system_text, contents = _to_gemini_contents(_system_prompt(req), req.messages)
 
     excluded = _excluded_tools(req)
-    gemini_tools = _to_gemini_tools()
-    if excluded:
-        gemini_tools = [{
+    gemini_tools = [
+        {
             "functionDeclarations": [
-                fd for fd in tool_group["functionDeclarations"]
-                if fd["name"] not in excluded
+                fd for fd in group["functionDeclarations"] if fd["name"] not in excluded
             ]
-        } for tool_group in gemini_tools]
-
-    body = {
-        "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": contents,
-        "tools": gemini_tools,
-        "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
-        "generationConfig": {"temperature": 0.7},
-    }
-
-    url = f"{GEMINI_BASE}/{model}:streamGenerateContent"
-    params = {"key": GOOGLE_API_KEY, "alt": "sse"}
+        }
+        for group in _to_gemini_tools()
+    ]
 
     print(f"[chat] model={model} (gemini) msgs={len(req.messages)}", flush=True)
 
+    # The fix call replays the conversation, so it has to see the continuation
+    # turns too; a list cell keeps that in sync without rebinding a closure.
+    live_contents = [contents]
+
+    async def _fix(name: str, args: dict, error: str) -> dict | None:
+        return await _gemini_fix_call(model, system_text, live_contents[0], name, args, error)
+
     try:
-        async with (
-            httpx.AsyncClient(timeout=120) as client,
-            client.stream("POST", url, params=params, json=body) as resp,
-        ):
-            print(f"[chat] gemini status={resp.status_code}", flush=True)
-            if resp.status_code != 200:
-                err = await resp.aread()
-                err_text = err.decode()
-                print(f"[chat] gemini error: {err_text[:500]}", flush=True)
-                yield {"data": json.dumps({"type": "error", "message": f"Gemini {resp.status_code}: {err_text[:300]}"})}
+        produced = 0
+        finish = ""
+        for attempt in range(MAX_CONTINUATIONS + 1):
+            out: dict = {"function_calls": [], "n_text": 0, "finish": "", "failed": False}
+            async for ev in _gemini_round(model, system_text, live_contents[0], gemini_tools, out):
+                yield ev
+            if out["failed"]:
                 return
+            finish = out["finish"] or finish
+            function_calls = out["function_calls"]
+            print(
+                f"[chat] done: n_text={out['n_text']} tool_calls={len(function_calls)} "
+                f"finish={out['finish'] or '-'}",
+                flush=True,
+            )
 
-            function_calls: list[dict] = []
-            n_text = 0
+            validation_warnings: dict[int, str] = {}
+            await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+            emit: dict = {}
+            async for ev in _emit_tool_calls(function_calls, req, validation_warnings, emit):
+                yield ev
 
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or raw == "[DONE]":
-                    continue
-                try:
-                    chunk = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
+            produced += out["n_text"] + emit["emitted"]
+            if produced or not emit["suppressed"] or attempt == MAX_CONTINUATIONS:
+                break
+            print(
+                f"[chat] turn produced only suppressed calls "
+                f"({', '.join(fc.get('name', '?') for fc in emit['suppressed'])}) — "
+                "answering them in-band and continuing",
+                flush=True,
+            )
+            live_contents[0] = live_contents[0] + [
+                {"role": "model", "parts": [
+                    {"functionCall": fc} for fc in emit["suppressed"]
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {
+                        "name": fc.get("name", ""),
+                        "response": {"result": _suppressed_tool_answer(fc.get("name", ""))},
+                    }}
+                    for fc in emit["suppressed"]
+                ]},
+            ]
 
-                for candidate in chunk.get("candidates", []):
-                    parts = candidate.get("content", {}).get("parts", [])
-                    for part in parts:
-                        if part.get("text"):
-                            n_text += 1
-                            yield {"data": json.dumps({"type": "text", "delta": part["text"]})}
-                        if "functionCall" in part:
-                            function_calls.append(part["functionCall"])
-
-        print(f"[chat] done: n_text={n_text} tool_calls={len(function_calls)}", flush=True)
-
-        async def _fix(name: str, args: dict, error: str) -> dict | None:
-            return await _gemini_fix_call(model, system_text, contents, name, args, error)
-
-        validation_warnings: dict[int, str] = {}
-        await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
-        async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
-            yield ev
+        if not produced:
+            print(f"[chat] empty turn (finish={finish or '-'})", flush=True)
+            yield {"data": json.dumps({"type": "error", "message": _empty_turn_message(finish)})}
+            return
         yield {"data": json.dumps({"type": "done"})}
 
     except Exception as exc:  # noqa: BLE001
         print(f"[chat] exception: {exc}", flush=True)
         yield {"data": json.dumps({"type": "error", "message": str(exc)})}
+
+
+async def _anthropic_round(
+    client: anthropic.AsyncAnthropic,
+    model: str,
+    system_text: str,
+    messages: list[dict],
+    tools: list[dict],
+    out: dict,
+) -> AsyncIterator[dict]:
+    """Stream one Claude turn, yielding SSE events and reporting into `out`."""
+    async with client.messages.stream(
+        model=model,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
+        system=system_text,
+        messages=messages,
+        tools=tools,
+    ) as stream:
+        async for text in stream.text_stream:
+            out["n_text"] += 1
+            yield {"data": json.dumps({"type": "text", "delta": text})}
+        final = await stream.get_final_message()
+
+    out["finish"] = final.stop_reason or ""
+    # The tool_use id is carried through so a continuation can pair each call
+    # with its tool_result — Anthropic rejects an assistant turn whose tool_use
+    # blocks are not all answered.
+    out["function_calls"] = [
+        {"name": block.name, "args": block.input, "id": block.id}
+        for block in final.content
+        if block.type == "tool_use"
+    ]
 
 
 async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]:
@@ -1183,40 +1386,68 @@ async def _stream_anthropic(model: str, req: ChatRequest) -> AsyncIterator[dict]
 
     print(f"[chat] model={model} (anthropic) msgs={len(req.messages)}", flush=True)
 
-    try:
-        async with client.messages.stream(
-            model=model,
-            max_tokens=ANTHROPIC_MAX_TOKENS,
-            system=system_text,
-            messages=messages,
-            tools=tools,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield {"data": json.dumps({"type": "text", "delta": text})}
-            final = await stream.get_final_message()
-    except anthropic.APIStatusError as exc:
-        print(f"[chat] anthropic error: {exc}", flush=True)
-        yield {"data": json.dumps({"type": "error", "message": f"Claude {exc.status_code}: {str(exc.message)[:300]}"})}
-        return
-    except Exception as exc:  # noqa: BLE001
-        print(f"[chat] exception: {exc}", flush=True)
-        yield {"data": json.dumps({"type": "error", "message": str(exc)})}
-        return
-
-    function_calls = [
-        {"name": block.name, "args": block.input}
-        for block in final.content
-        if block.type == "tool_use"
-    ]
-    print(f"[chat] done: tool_calls={len(function_calls)}", flush=True)
+    live_messages = [messages]
 
     async def _fix(name: str, args: dict, error: str) -> dict | None:
-        return await _anthropic_fix_call(client, model, system_text, messages, name, args, error)
+        return await _anthropic_fix_call(client, model, system_text, live_messages[0], name, args, error)
 
-    validation_warnings: dict[int, str] = {}
-    await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
-    async for ev in _emit_tool_calls(function_calls, req, validation_warnings):
-        yield ev
+    produced = 0
+    finish = ""
+    for attempt in range(MAX_CONTINUATIONS + 1):
+        out: dict = {"function_calls": [], "n_text": 0, "finish": ""}
+        try:
+            async for ev in _anthropic_round(
+                client, model, system_text, live_messages[0], tools, out
+            ):
+                yield ev
+        except anthropic.APIStatusError as exc:
+            print(f"[chat] anthropic error: {exc}", flush=True)
+            yield {"data": json.dumps({"type": "error", "message": f"Claude {exc.status_code}: {str(exc.message)[:300]}"})}
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"[chat] exception: {exc}", flush=True)
+            yield {"data": json.dumps({"type": "error", "message": str(exc)})}
+            return
+
+        finish = out["finish"] or finish
+        function_calls = out["function_calls"]
+        print(
+            f"[chat] done: n_text={out['n_text']} tool_calls={len(function_calls)} "
+            f"finish={out['finish'] or '-'}",
+            flush=True,
+        )
+
+        validation_warnings: dict[int, str] = {}
+        await _validate_and_fix_calls(function_calls, req, _fix, validation_warnings)
+        emit: dict = {}
+        async for ev in _emit_tool_calls(function_calls, req, validation_warnings, emit):
+            yield ev
+
+        produced += out["n_text"] + emit["emitted"]
+        if produced or not emit["suppressed"] or attempt == MAX_CONTINUATIONS:
+            break
+        print(
+            f"[chat] turn produced only suppressed calls "
+            f"({', '.join(fc.get('name', '?') for fc in emit['suppressed'])}) — "
+            "answering them in-band and continuing",
+            flush=True,
+        )
+        live_messages[0] = live_messages[0] + [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": fc["id"], "name": fc["name"], "input": fc["args"]}
+                for fc in emit["suppressed"]
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": fc["id"],
+                 "content": _suppressed_tool_answer(fc["name"])}
+                for fc in emit["suppressed"]
+            ]},
+        ]
+
+    if not produced:
+        print(f"[chat] empty turn (finish={finish or '-'})", flush=True)
+        yield {"data": json.dumps({"type": "error", "message": _empty_turn_message(finish)})}
+        return
     yield {"data": json.dumps({"type": "done"})}
 
 

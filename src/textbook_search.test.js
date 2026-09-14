@@ -158,8 +158,12 @@ test("the chapters filter restricts the search in both directions", async () => 
   // "wave" lives only in chapter 2, so the filter is observable either way.
   const inside = await searchTextbook({ query: "wave", books: ["book-a"], chapters: [2] }, { corpus });
   assert.deepEqual(inside.hits.map((h) => h.number), ["2.1"]);
+  assert.equal(inside.browsed, false);
+  // Filtered to a chapter the term is absent from, nothing ranks -- so the
+  // lookup degrades to browsing that chapter rather than returning nothing.
   const outside = await searchTextbook({ query: "wave", books: ["book-a"], chapters: [1] }, { corpus });
-  assert.equal(outside.hits.length, 0);
+  assert.equal(outside.browsed, true);
+  assert.deepEqual(outside.hits.map((h) => h.number), ["1.1", "1.2"]);
 });
 
 test("a term common to every section scores below the floor", async () => {
@@ -256,8 +260,52 @@ test("maxChars accounts for the missing-sections line too", async () => {
 test("an empty result tells the model to say so rather than invent content", () => {
   const out = formatSectionsForPrompt({ query: "phlogiston", hits: [], missing: [] });
   assert.match(out, /No section/);
-  assert.match(out, /inventing textbook content/);
+  assert.match(out, /Never invent textbook content/);
   assert.match(out, /phlogiston/);
+});
+
+// The turn gets one lookup, so an empty result that suggests searching again
+// sends the model into a call the server drops on the floor -- the turn then
+// ends with no text and no tool call at all.
+test("an empty result does not invite another search", () => {
+  const out = formatSectionsForPrompt({ query: "phlogiston", hits: [], missing: [] });
+  assert.match(out, /do not try to search again/);
+  assert.doesNotMatch(out, /try different terms/);
+});
+
+test("a chapter with no query browses that chapter instead of matching nothing", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ chapters: [1], books: ["book-a"] }, { corpus });
+  assert.equal(r.browsed, true);
+  assert.deepEqual(r.hits.map((h) => `${h.slug}:${h.number}`), ["book-a:1.1", "book-a:1.2"]);
+  assert.match(formatSectionsForPrompt(r), /sections in book order/);
+});
+
+test("the chapter browse honours max_sections", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ chapters: [1], max_sections: 1 }, { corpus });
+  assert.equal(r.hits.length, 1);
+});
+
+test("a query that ranks nothing falls back to the requested chapter", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "phlogiston", chapters: [2], books: ["book-a"] }, { corpus });
+  assert.equal(r.browsed, true);
+  assert.deepEqual(r.hits.map((h) => `${h.slug}:${h.number}`), ["book-a:2.1"]);
+});
+
+test("a query that ranks is not replaced by the chapter browse", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({ query: "friction", chapters: [1], books: ["book-a"] }, { corpus });
+  assert.equal(r.browsed, false);
+  assert.equal(r.hits[0].number, "1.2");
+});
+
+test("a call with neither query, sections nor chapters still returns no hits", async () => {
+  const { corpus } = makeFixture();
+  const r = await searchTextbook({}, { corpus });
+  assert.equal(r.hits.length, 0);
+  assert.equal(r.browsed, false);
 });
 
 test("buildCatalog lists chapters with their section ranges", () => {

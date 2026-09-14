@@ -36,6 +36,9 @@ The server starts on `http://localhost:8000` by default.
 | `LITELLM_MODEL` | ❌ | `gemini-2.5-flash` | Default model id (see below); a `provider/` prefix, LiteLLM style, is stripped automatically |
 | `ANTHROPIC_MAX_TOKENS` | ❌ | `8192` | `max_tokens` sent on every Claude request (required by the Anthropic API) |
 | `AUTH_HOLDOFF_SECS` | ❌ | `10` | Seconds an IP is locked out after a failed auth attempt (rate-limits brute force) |
+| `MAX_FIX_ATTEMPTS` | ❌ | `2` | Repair calls spent on a question that fails validation |
+| `VALIDATE_TIMEOUT` | ❌ | `10` | Seconds a question may run in the validation sandbox |
+| `MAX_CONTINUATIONS` | ❌ | `1` | Extra model calls spent finishing a turn the model spent asking for data it already had (see *Tool round-trips*) |
 | `PORT` | ❌ | `8000` | Server port |
 
 At least one of `GOOGLE_API_KEY` / `ANTHROPIC_API_KEY` must be set. Set both to let
@@ -69,6 +72,36 @@ whichever provider key(s) the server has configured.
 > tier. Adding another provider means adding its own request/response translation
 > in `main.py` — see `_stream_gemini` / `_stream_anthropic` and the `MODEL_REGISTRY`
 > dict for the pattern to follow (e.g. for OpenAI or a local Ollama model).
+
+## Tool round-trips
+
+Three tools — `get_question_bank`, `get_question` and `search_textbook` — are answered
+by the *browser*, not the server: the server emits the call as an SSE `tool_call`, the
+browser cancels the stream, resolves it locally, and replays the whole turn with the
+result inlined in the system prompt. The tool is then dropped from the declarations so
+the model cannot ask twice.
+
+Dropping the declaration is not enough on its own. The result arrives as an anonymous
+block appended to the system prompt, so nothing in the conversation ties it to the call
+that asked for it, and both providers will re-emit a call for a tool they can still see
+named in the prompt text. When that is *all* a turn contains, the server used to drop
+the call and emit nothing but `done` — the browser had nothing to render but
+"(Empty response from AI)" and the user's request was lost. Three consecutive turns
+were lost that way in production.
+
+So the server now does three things instead:
+
+- The grounding rules change once excerpts exist: they say the lookup already ran and
+  name what it was for (`textbook_query`), rather than repeating "call search_textbook
+  first".
+- A turn whose every tool call was suppressed is **continued**: the calls are answered
+  in-band as `functionResponse` / `tool_result` ("that data is already in the prompt;
+  carry on") and the model is asked again, up to `MAX_CONTINUATIONS` times.
+- A turn that still produces nothing ends with an SSE `error` explaining why, including
+  the provider's finish reason. `MAX_TOKENS` with no visible output is the common one:
+  Gemini 2.5 counts reasoning tokens against the output budget, so a request like
+  "create 30 questions" can exhaust it before emitting a single token. The message tells
+  the user to ask for fewer questions at a time, which is the actual remedy.
 
 ## Question validation
 

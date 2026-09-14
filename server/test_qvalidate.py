@@ -488,5 +488,145 @@ class TestRuntimeParity(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Chat turn contract
+# ---------------------------------------------------------------------------
+# A turn in which the model only asked for data the server had already inlined
+# used to produce no SSE events at all: every call was suppressed, no text was
+# streamed, and the browser rendered the turn as "(Empty response from AI)".
+# Three consecutive user messages were lost that way on question-forge-server
+# before these tests existed.
+
+
+def _drain(agen):
+    """Collect an SSE async generator's decoded payloads."""
+    async def _run():
+        return [json.loads(ev["data"]) async for ev in agen]
+    return asyncio.run(_run())
+
+
+def _fake_round(script):
+    """Build a stand-in for main._gemini_round that replays `script`.
+
+    Each entry is (text, function_calls, finish); the call count is recorded on
+    the returned function so a test can assert whether a continuation ran.
+    """
+    calls = []
+    seen_tools = []
+
+    async def _round(model, system_text, contents, tools, out):
+        calls.append(contents)
+        seen_tools.append(tools)
+        text, function_calls, finish = script[min(len(calls) - 1, len(script) - 1)]
+        out["finish"] = finish
+        out["function_calls"] = list(function_calls)
+        if text:
+            out["n_text"] += 1
+            yield {"data": json.dumps({"type": "text", "delta": text})}
+
+    _round.calls = calls
+    _round.tools = seen_tools
+    return _round
+
+
+class TestChatTurnContract(unittest.TestCase):
+    def setUp(self):
+        self.main = import_main()
+        if self.main is None:
+            self.skipTest("server dependencies not installed")
+        self._real_round = self.main._gemini_round
+        self.addCleanup(setattr, self.main, "_gemini_round", self._real_round)
+
+    def _req(self, **kw):
+        return self.main.ChatRequest(**{
+            "messages": [
+                self.main.ChatMessage(role="user", content="Create 30 numerical entry questions."),
+            ],
+            "textbook_catalog": "=== TEXTBOOK CATALOG ===\n  Ch 5. Electric Charges",
+            **kw,
+        })
+
+    # -- _emit_tool_calls reporting ----------------------------------------
+
+    def test_a_suppressed_call_is_reported_and_emits_nothing(self):
+        req = self._req(textbook_context="=== TEXTBOOK EXCERPTS ===\nstuff")
+        out = {}
+        events = _drain(self.main._emit_tool_calls(
+            [{"name": "search_textbook", "args": {"chapters": [5]}}], req, {}, out))
+        self.assertEqual(events, [])
+        self.assertEqual(out["emitted"], 0)
+        self.assertEqual([fc["name"] for fc in out["suppressed"]], ["search_textbook"])
+
+    def test_a_pending_search_is_forwarded_with_every_selector(self):
+        """chapters-only is a valid lookup now, so it must survive the hop."""
+        out = {}
+        events = _drain(self.main._emit_tool_calls(
+            [{"name": "search_textbook", "args": {"chapters": [5], "max_sections": 6}}],
+            self._req(), {}, out))
+        self.assertEqual(events[0]["chapters"], [5])
+        self.assertEqual(events[0]["max_sections"], 6)
+        self.assertEqual(out["emitted"], 1)
+
+    def test_a_real_call_counts_as_emitted(self):
+        out = {}
+        events = _drain(self.main._emit_tool_calls(
+            [{"name": "create_question", "args": {"question_id": "q_x", "title": "X"}}],
+            self._req(), {}, out))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(out["emitted"], 1)
+        self.assertEqual(out["suppressed"], [])
+
+    # -- grounding rules ----------------------------------------------------
+
+    def test_excerpts_in_the_prompt_forbid_a_second_search(self):
+        prompt = self.main._system_prompt(self._req(
+            textbook_context="=== TEXTBOOK EXCERPTS ===\nstuff",
+            textbook_query="chapter 5",
+        ))
+        self.assertIn("do NOT call search_textbook again", prompt)
+        self.assertIn("chapter 5", prompt)
+        self.assertNotIn("Call search_textbook BEFORE", prompt)
+
+    def test_without_excerpts_the_model_is_told_to_search(self):
+        prompt = self.main._system_prompt(self._req())
+        self.assertIn("Call search_textbook BEFORE", prompt)
+
+    # -- the turn itself ----------------------------------------------------
+
+    def test_a_suppressed_only_turn_is_continued_rather_than_ending_empty(self):
+        req = self._req(textbook_context="=== TEXTBOOK EXCERPTS ===\nstuff")
+        suppressed = [{"name": "search_textbook", "args": {"chapters": [5]}}]
+        round_ = _fake_round([("", suppressed, "STOP"), ("Grounded in 5.1.", [], "STOP")])
+        self.main._gemini_round = round_
+        events = _drain(self.main._stream_gemini("gemini-2.5-flash", req))
+        self.assertEqual(len(round_.calls), 2, "the suppressed call was not answered in-band")
+        # The refactor into rounds must not lose the tool exclusion: offering
+        # search_textbook again is what started the loop.
+        for tools in round_.tools:
+            names = [fd["name"] for group in tools for fd in group["functionDeclarations"]]
+            self.assertNotIn("search_textbook", names)
+            self.assertIn("create_question", names)
+        self.assertEqual([e["type"] for e in events], ["text", "done"])
+        # The continuation must carry the tool result, or the model just repeats itself.
+        self.assertIn("functionResponse", json.dumps(round_.calls[1]))
+
+    def test_a_turn_that_stays_empty_explains_itself(self):
+        req = self._req(textbook_context="=== TEXTBOOK EXCERPTS ===\nstuff")
+        suppressed = [{"name": "search_textbook", "args": {}}]
+        round_ = _fake_round([("", suppressed, "STOP")])
+        self.main._gemini_round = round_
+        events = _drain(self.main._stream_gemini("gemini-2.5-flash", req))
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertNotIn("done", [e["type"] for e in events])
+
+    def test_max_tokens_with_no_output_is_reported_not_swallowed(self):
+        round_ = _fake_round([("", [], "MAX_TOKENS")])
+        self.main._gemini_round = round_
+        events = _drain(self.main._stream_gemini("gemini-2.5-flash", self._req()))
+        self.assertEqual(len(round_.calls), 1, "nothing was suppressed, so nothing to continue")
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("output limit", events[-1]["message"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
