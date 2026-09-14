@@ -46,10 +46,16 @@ jobs:
   test-server:
     name: Question contract tests
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      # Installs the full dependency set from server/pyproject.toml + server/uv.lock
+      # (fastapi, anthropic, etc.), not just the numpy/jinja2 that qvalidate.py needs,
+      # so TestChatTurnContract's tests run instead of silently skipping.
+      - uses: astral-sh/setup-uv@v10
         with:
-          python-version: "3.13"
-      - run: pip install "numpy>=2.0,<2.2" "jinja2>=3.1"
-      - run: python server/test_qvalidate.py
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python test_qvalidate.py
