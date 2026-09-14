@@ -50,6 +50,17 @@ GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MAX_TOKENS: int = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "8192"))
 
+# Gemini 2.5 models think by default with thinkingBudget=-1 (the model decides
+# how much to reason), and those reasoning tokens are drawn from the *same*
+# maxOutputTokens ceiling as the visible reply/tool call -- see
+# _empty_turn_message. Left uncapped, a request that invites a lot of
+# open-ended reasoning (e.g. synthesizing several textbook sections into one
+# question) can spend the entire budget thinking and reach MAX_TOKENS having
+# emitted nothing. Capping the thinking budget below maxOutputTokens leaves a
+# guaranteed floor for the actual reply no matter how long the model reasons.
+GEMINI_MAX_OUTPUT_TOKENS: int = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
+GEMINI_THINKING_BUDGET: int = int(os.environ.get("GEMINI_THINKING_BUDGET", "8192"))
+
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ---------------------------------------------------------------------------
@@ -835,6 +846,15 @@ def _format_validation_error(err: str, limit: int = 400) -> str:
     return collapsed
 
 
+def _gemini_generation_config(temperature: float) -> dict:
+    """generationConfig shared by every Gemini call -- see GEMINI_THINKING_BUDGET."""
+    return {
+        "temperature": temperature,
+        "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+        "thinkingConfig": {"thinkingBudget": GEMINI_THINKING_BUDGET},
+    }
+
+
 async def _gemini_fix_call(
     model: str,
     system_text: str,
@@ -870,7 +890,7 @@ async def _gemini_fix_call(
                 "allowedFunctionNames": [fc_name],
             }
         },
-        "generationConfig": {"temperature": 0.2},
+        "generationConfig": _gemini_generation_config(0.2),
     }
     url = f"{GEMINI_BASE}/{model}:generateContent"
     try:
@@ -1186,19 +1206,31 @@ def _suppressed_tool_answer(name: str) -> str:
     )
 
 
-def _empty_turn_message(finish: str) -> str:
+def _empty_turn_message(finish: str, usage: dict | None = None) -> str:
     """Explain a turn that produced no text and no tool call.
 
     Gemini 2.5 counts reasoning tokens against the output budget, so a large
     request ("create 30 questions") can exhaust it before a single visible token
     is emitted.  That arrives as a 200 with an empty candidate, which is
-    otherwise indistinguishable from a bug in this server.
+    otherwise indistinguishable from a bug in this server.  GEMINI_THINKING_BUDGET
+    caps that, but `usage` (the turn's usageMetadata, when Gemini sent one)
+    still gets surfaced here so a report of this error is diagnosable on its
+    own rather than needing a server-log lookup for the raw token counts.
     """
     reason = (finish or "").upper()
     if reason == "MAX_TOKENS":
+        detail = ""
+        usage = usage or {}
+        thoughts = usage.get("thoughtsTokenCount")
+        if thoughts is not None:
+            detail = (
+                f" ({thoughts} tokens spent on internal reasoning, "
+                f"{usage.get('candidatesTokenCount', 0)} on the reply itself, "
+                f"{usage.get('promptTokenCount', '?')} in the prompt)"
+            )
         return (
-            "The model hit its output limit before writing any reply — large requests can "
-            "spend the whole budget on internal reasoning. Ask for fewer questions at a time "
+            f"The model hit its output limit before writing any reply{detail} — large requests "
+            "can spend the whole budget on internal reasoning. Ask for fewer questions at a time "
             "(5–10 works well) and repeat."
         )
     if reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
@@ -1228,7 +1260,7 @@ async def _gemini_round(
         "contents": contents,
         "tools": tools,
         "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
-        "generationConfig": {"temperature": 0.7},
+        "generationConfig": _gemini_generation_config(0.7),
     }
     url = f"{GEMINI_BASE}/{model}:streamGenerateContent"
     params = {"key": GOOGLE_API_KEY, "alt": "sse"}
@@ -1255,6 +1287,11 @@ async def _gemini_round(
                 chunk = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+
+            # usageMetadata is cumulative and repeated on every chunk, so the
+            # last chunk that carries it has the final counts for the turn.
+            if "usageMetadata" in chunk:
+                out["usage"] = chunk["usageMetadata"]
 
             for candidate in chunk.get("candidates", []):
                 if candidate.get("finishReason"):
@@ -1293,17 +1330,21 @@ async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
     try:
         produced = 0
         finish = ""
+        usage: dict = {}
         for attempt in range(MAX_CONTINUATIONS + 1):
-            out: dict = {"function_calls": [], "n_text": 0, "finish": "", "failed": False}
+            out: dict = {"function_calls": [], "n_text": 0, "finish": "", "failed": False, "usage": {}}
             async for ev in _gemini_round(model, system_text, live_contents[0], gemini_tools, out):
                 yield ev
             if out["failed"]:
                 return
             finish = out["finish"] or finish
+            usage = out["usage"] or usage
             function_calls = out["function_calls"]
             print(
                 f"[chat] done: n_text={out['n_text']} tool_calls={len(function_calls)} "
-                f"finish={out['finish'] or '-'}",
+                f"finish={out['finish'] or '-'} tokens(prompt={usage.get('promptTokenCount', '?')} "
+                f"thoughts={usage.get('thoughtsTokenCount', '?')} reply={usage.get('candidatesTokenCount', '?')} "
+                f"total={usage.get('totalTokenCount', '?')})",
                 flush=True,
             )
 
@@ -1336,8 +1377,8 @@ async def _stream_gemini(model: str, req: ChatRequest) -> AsyncIterator[dict]:
             ]
 
         if not produced:
-            print(f"[chat] empty turn (finish={finish or '-'})", flush=True)
-            yield {"data": json.dumps({"type": "error", "message": _empty_turn_message(finish)})}
+            print(f"[chat] empty turn (finish={finish or '-'} usage={usage or '-'})", flush=True)
+            yield {"data": json.dumps({"type": "error", "message": _empty_turn_message(finish, usage)})}
             return
         yield {"data": json.dumps({"type": "done"})}
 
