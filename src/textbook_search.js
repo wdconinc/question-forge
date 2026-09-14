@@ -84,18 +84,39 @@ function parseHandle(handle, books) {
 }
 
 /**
+ * Whether `id` is in scope for `slug` under `sectionScope`.
+ *
+ * `sectionScope` is the per-book section-id allow-list an instructor pinned
+ * ahead of time (from the textbook-grounding tree); an absent or empty entry
+ * means the whole book is in scope. Every path that can hand a section to the
+ * model -- explicit ids, ranked search, chapter browse -- must check this, or
+ * the tree's restriction is cosmetic.
+ */
+function sectionAllowed(sectionScope, slug, id) {
+  const allow = sectionScope && sectionScope[slug];
+  return !allow || !allow.length || allow.includes(id);
+}
+
+/**
  * Sections of the named chapters, in book and section order.
  *
  * This is a browse, not a search: no scoring is involved, so it is only ever a
- * fallback for a lookup that ranked nothing.
+ * fallback for a lookup that ranked nothing. `chapters` (a model's own
+ * tool-call argument) and `sectionScope` (the persisted per-book pin) narrow
+ * independently: a book with no chapters requested but a section pin of its
+ * own still contributes its pinned sections, which is what makes a question
+ * set scoped to "just these 6 sections" browsable with no query at all.
  */
-async function browseChapters(books, corpus, chapters, maxSections) {
-  const wanted = new Set(chapters.map(Number));
+async function browseChapters(books, corpus, chapters, maxSections, sectionScope) {
+  const wanted = chapters && chapters.length ? new Set(chapters.map(Number)) : null;
   const picked = [];
   for (const book of books) {
+    const pinned = sectionScope && sectionScope[book.slug] && sectionScope[book.slug].length;
+    if (!wanted && !pinned) continue;
     const index = await corpus.index(book.slug);
     for (const rec of index.sections || []) {
-      if (!wanted.has(Number(rec.ch))) continue;
+      if (wanted && !wanted.has(Number(rec.ch))) continue;
+      if (!sectionAllowed(sectionScope, book.slug, rec.id)) continue;
       picked.push({ slug: book.slug, id: rec.id, sh: rec.sh, section: rec });
       if (picked.length >= maxSections) return picked;
     }
@@ -110,6 +131,12 @@ async function browseChapters(books, corpus, chapters, maxSections) {
  * transport gives the model exactly one chance to ask for context per turn, so
  * it has to be able to name sections it already knows from the catalog instead
  * of guessing a query and hoping.
+ *
+ * `sectionScope` (an optional `{ [slug]: string[] }`) is the persisted,
+ * per-book restriction from the textbook-grounding tree -- distinct from
+ * `chapters`, which is the model's own ad hoc argument for this one call.
+ * Both narrow independently and it is enforced on every path below, not just
+ * ranking, so a section outside scope can never be returned by naming it.
  */
 export async function searchTextbook(args = {}, deps = {}) {
   const { corpus } = deps;
@@ -118,6 +145,7 @@ export async function searchTextbook(args = {}, deps = {}) {
   const query = String(args.query || "").trim();
   const sectionIds = Array.isArray(args.section_ids) ? args.section_ids : [];
   const chapters = Array.isArray(args.chapters) ? args.chapters : [];
+  const sectionScope = args.sectionScope && typeof args.sectionScope === "object" ? args.sectionScope : null;
   const maxSections = Math.max(1, Math.min(Number(args.max_sections) || 3, MAX_SECTIONS));
 
   const manifest = await corpus.manifest();
@@ -138,6 +166,7 @@ export async function searchTextbook(args = {}, deps = {}) {
       let found = null;
       for (const book of candidates) {
         if (!book) continue;
+        if (!sectionAllowed(sectionScope, book.slug, number)) continue;
         const index = await corpus.index(book.slug);
         const rec = (index.sections || []).find((s) => s.id === number);
         if (rec) { found = { slug: book.slug, id: rec.id, sh: rec.sh, section: rec }; break; }
@@ -159,7 +188,8 @@ export async function searchTextbook(args = {}, deps = {}) {
     const stats = combineStats(indexes);
     const pooled = [];
     books.forEach((book, i) => {
-      for (const r of rankSections(query, indexes[i], { topK: maxSections, chapters, stats })) {
+      const sections = sectionScope && sectionScope[book.slug];
+      for (const r of rankSections(query, indexes[i], { topK: maxSections, chapters, sections, stats })) {
         pooled.push({ slug: book.slug, id: r.id, sh: r.section.sh, section: r.section, relevance: r.relevance });
       }
     });
@@ -167,16 +197,17 @@ export async function searchTextbook(args = {}, deps = {}) {
     selected = pooled.slice(0, maxSections);
   }
 
-  // Two ways to reach the ranker's empty set: a query that scored below
-  // `minScore` everywhere, and a call that named a chapter but no query at all
+  // Three ways to reach the ranker's empty set: a query that scored below
+  // `minScore` everywhere, a call that named a chapter but no query at all
   // (the schema allows it, and a question set pinned to one chapter invites
-  // exactly that).  Both used to return nothing, and returning nothing is the
-  // worst outcome available: the model is told to try different terms, its one
-  // lookup for the turn is already spent, and the turn dies.  Serve the
-  // chapter instead -- "give me chapter 5" is a request this corpus can
-  // answer exactly.
-  if (!selected.length && !sectionIds.length && chapters.length) {
-    selected = await browseChapters(books, corpus, chapters, maxSections);
+  // exactly that), and a query-less call against a question set pinned to a
+  // handful of sections. All used to return nothing, and returning nothing is
+  // the worst outcome available: the model is told to try different terms,
+  // its one lookup for the turn is already spent, and the turn dies. Serve
+  // the chapter (or the pinned sections) instead.
+  const hasScope = !!(sectionScope && books.some((b) => sectionScope[b.slug] && sectionScope[b.slug].length));
+  if (!selected.length && !sectionIds.length && (chapters.length || hasScope)) {
+    selected = await browseChapters(books, corpus, chapters, maxSections, sectionScope);
     browsed = selected.length > 0;
   }
 
@@ -340,40 +371,15 @@ export function formatSectionsForPrompt(result, opts = {}) {
 }
 
 /**
- * Parse a chapter pin like "4-6, 9" into [4, 5, 6, 9].
- *
- * Lenient by design: this is a free-text field an instructor types between
- * classes, so "4 - 6", "9,4-6" and "6-4" all mean the same thing, and garbage
- * yields an empty pin (= every chapter) rather than an error that silently
- * narrows retrieval to nothing.
+ * Enumerate a chapter's section ids from its section *count* alone: "N.0" is
+ * the chapter opener, "N.1".."N.(count-1)" follow, exactly how
+ * scripts/build_textbook_corpus.py:assign_numbers() numbers them. This lets a
+ * chapter-level selection (the textbook-grounding tree's chapter checkbox) be
+ * expressed as a plain section-id list without fetching that book's full
+ * per-section index first.
  */
-export function parseChapterSpec(spec) {
-  const out = new Set();
-  for (const part of String(spec || "").split(",")) {
-    const range = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
-    if (range) {
-      const [lo, hi] = [Number(range[1]), Number(range[2])].sort((a, b) => a - b);
-      // A fat-fingered "1-900" should not enumerate 900 chapters.
-      if (hi - lo <= 200) for (let n = lo; n <= hi; n++) out.add(n);
-      continue;
-    }
-    const one = part.trim().match(/^\d+$/);
-    if (one) out.add(Number(part.trim()));
-  }
-  return [...out].sort((a, b) => a - b);
-}
-
-/** Render [4,5,6,9] back to "4-6, 9" for the input field. */
-export function formatChapterSpec(chapters) {
-  const sorted = [...new Set((chapters || []).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
-  const parts = [];
-  for (let i = 0; i < sorted.length; ) {
-    let j = i;
-    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
-    parts.push(j - i >= 2 ? `${sorted[i]}-${sorted[j]}` : sorted.slice(i, j + 1).join(", "));
-    i = j + 1;
-  }
-  return parts.join(", ");
+export function chapterSectionIds(ch) {
+  return Array.from({ length: ch.sections }, (_, i) => `${ch.n}.${i}`);
 }
 
 /**
@@ -383,21 +389,38 @@ export function formatChapterSpec(chapters) {
  * sections, which is ~18k tokens on every turn including the ones that just fix
  * a typo.  Chapters cost ~2k and still let the model name section ids, which it
  * can then request directly.
+ *
+ * `opts.sections` is `{ [slug]: string[] }`, the same per-book section-id
+ * allow-list `searchTextbook` enforces -- a chapter is only listed if at least
+ * one of its sections is in scope, and is flagged when some of its sections
+ * were left out, so the model does not assume it can browse the whole thing.
  */
 export function buildCatalog(manifest, opts = {}) {
   const books = activeBooks(manifest, opts.books);
   if (!books.length) return "";
-  const pinned = opts.chapters && opts.chapters.length ? new Set(opts.chapters.map(Number)) : null;
+  const sectionScope = opts.sections || null;
 
   const lines = ["=== TEXTBOOK CATALOG ===",
     "Available through the search_textbook tool. Cite sections exactly as [slug:number]."];
+  let anyPartial = false;
   for (const book of books) {
+    const allow = sectionScope && sectionScope[book.slug];
     lines.push("", `[${book.slug}] ${book.title} — ${book.license || "CC BY-NC-SA 4.0"}`);
     for (const ch of book.chapters || []) {
-      if (pinned && !pinned.has(Number(ch.n))) continue;
-      lines.push(`  Ch ${ch.n}. ${ch.title} (${ch.sections} sections → ${ch.n}.0–${ch.n}.${ch.sections - 1})`);
+      let selectedCount = ch.sections;
+      if (allow && allow.length) {
+        selectedCount = chapterSectionIds(ch).filter((id) => allow.includes(id)).length;
+        if (selectedCount === 0) continue;
+      }
+      const partial = selectedCount < ch.sections;
+      if (partial) anyPartial = true;
+      lines.push(`  Ch ${ch.n}. ${ch.title} (${ch.sections} sections → ${ch.n}.0–${ch.n}.${ch.sections - 1})` +
+        (partial ? " — limited to selected sections" : ""));
     }
   }
-  if (pinned) lines.push("", `This question set is pinned to chapters ${[...pinned].join(", ")}; prefer them unless asked otherwise.`);
+  if (anyPartial) {
+    lines.push("", "Some chapters above are limited to a hand-picked subset of their sections; " +
+      "search_textbook only returns sections in scope even if you ask for the whole chapter.");
+  }
   return lines.join("\n") + "\n";
 }

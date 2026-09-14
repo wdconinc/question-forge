@@ -97,6 +97,18 @@ test("rankSections filters to the requested chapters", () => {
   assert.deepEqual(hits.map((h) => h.id), ["2.1"]);
 });
 
+test("rankSections filters to the requested section ids", () => {
+  const hits = rankSections("motion", fixtureIndex(), { sections: ["1.2"], minScore: 0 });
+  assert.deepEqual(hits.map((h) => h.id), ["1.2"]);
+});
+
+test("chapters and sections filters both apply when both are given", () => {
+  // "1.1" is in chapter 1, so a chapters:[2] pin excludes it even though the
+  // sections list alone would have allowed it -- the two filters intersect.
+  const hits = rankSections("motion", fixtureIndex(), { chapters: [2], sections: ["1.1", "2.1"], minScore: 0 });
+  assert.deepEqual(hits.map((h) => h.id), ["2.1"]);
+});
+
 test("rankSections drops everything below the score floor", () => {
   // Returning the least-bad sections for an uncovered topic is worse than
   // returning none: the model treats whatever it is handed as evidence.
