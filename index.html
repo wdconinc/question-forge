@@ -3923,6 +3923,7 @@ async function doSendChat() {
       if (needsBank) {
         if (activeBankSummary) {
           console.warn("[AI] AI requested question bank again after it was already provided — ignoring.");
+          aEl.innerHTML = '<span style="color:#e65100">⚠ The AI kept asking for the question bank instead of answering. Try again, or ask for fewer questions at a time.</span>';
           break;
         }
         aEl.innerHTML = '<span style="color:#aaa">Fetching question bank…</span>';
@@ -3933,6 +3934,7 @@ async function doSendChat() {
       if (neededQuestionId) {
         if (requestedQuestion?.question_id === neededQuestionId) {
           console.warn("[AI] AI requested the same question again after it was already provided — ignoring.");
+          aEl.innerHTML = `<span style="color:#e65100">⚠ The AI kept asking for question <b>${escHtml(neededQuestionId)}</b> instead of answering. Try again.</span>`;
           break;
         }
         const neededQ = state?.questions?.[neededQuestionId];
@@ -3954,12 +3956,15 @@ async function doSendChat() {
         const key = JSON.stringify(neededTextbook);
         if (servedTextbookKeys.has(key)) {
           console.warn("[AI] AI repeated the same textbook search — ignoring.");
+          aEl.innerHTML = '<span style="color:#e65100">⚠ The AI kept repeating the same textbook search instead of answering. Try again, or ask for fewer questions at a time.</span>';
           break;
         }
         servedTextbookKeys.add(key);
         const label = neededTextbook.query
           || (neededTextbook.section_ids || []).join(", ")
-          || "the textbook";
+          || ((neededTextbook.chapters || []).length
+              ? `chapter ${(neededTextbook.chapters || []).join(", ")}`
+              : "the textbook");
         aEl.innerHTML = `<span style="color:#aaa">Searching the textbook for <b>${escHtml(label)}</b>…</span>`;
         assistantText = "";
         try {
@@ -3985,10 +3990,12 @@ async function doSendChat() {
       console.warn("[AI] reached max tool retries without completing the turn.");
     }
 
-    // Only show fallback if NEITHER text nor a tool-call updated the bubble
+    // Only show fallback if NEITHER text nor a tool-call updated the bubble.
+    // The server explains a genuinely empty model turn as an `error` event, so
+    // reaching here means the retry loop ran out of turns instead.
     if (!assistantText && aEl.innerHTML.includes("color:#aaa")) {
-      console.warn("[AI] stream ended with no text and no tool call (empty Gemini response?).");
-      aEl.innerHTML = '<span style="color:#888;font-style:italic">(Empty response from AI — check flyctl logs for details)</span>';
+      console.warn("[AI] stream ended with no text and no tool call.");
+      aEl.innerHTML = '<span style="color:#e65100">⚠ The AI kept asking for context instead of answering. Try again, or ask for fewer questions at a time.</span>';
     }
     aiState.messages.push({ role: "assistant", content: assistantText || "[tool call]" });
     aiState.chatLog.push({ role: "assistant", html: aEl.innerHTML, toolBadges: [] });

@@ -84,6 +84,26 @@ function parseHandle(handle, books) {
 }
 
 /**
+ * Sections of the named chapters, in book and section order.
+ *
+ * This is a browse, not a search: no scoring is involved, so it is only ever a
+ * fallback for a lookup that ranked nothing.
+ */
+async function browseChapters(books, corpus, chapters, maxSections) {
+  const wanted = new Set(chapters.map(Number));
+  const picked = [];
+  for (const book of books) {
+    const index = await corpus.index(book.slug);
+    for (const rec of index.sections || []) {
+      if (!wanted.has(Number(rec.ch))) continue;
+      picked.push({ slug: book.slug, id: rec.id, sh: rec.sh, section: rec });
+      if (picked.length >= maxSections) return picked;
+    }
+  }
+  return picked;
+}
+
+/**
  * Resolve a textbook search into full section records.
  *
  * `section_ids` bypasses ranking entirely.  That matters because the chat
@@ -106,6 +126,7 @@ export async function searchTextbook(args = {}, deps = {}) {
 
   let selected = [];
   const missing = [];
+  let browsed = false;
 
   if (sectionIds.length) {
     // Explicitly named sections are served up to the same ceiling as a ranked
@@ -146,6 +167,19 @@ export async function searchTextbook(args = {}, deps = {}) {
     selected = pooled.slice(0, maxSections);
   }
 
+  // Two ways to reach the ranker's empty set: a query that scored below
+  // `minScore` everywhere, and a call that named a chapter but no query at all
+  // (the schema allows it, and a question set pinned to one chapter invites
+  // exactly that).  Both used to return nothing, and returning nothing is the
+  // worst outcome available: the model is told to try different terms, its one
+  // lookup for the turn is already spent, and the turn dies.  Serve the
+  // chapter instead -- "give me chapter 5" is a request this corpus can
+  // answer exactly.
+  if (!selected.length && !sectionIds.length && chapters.length) {
+    selected = await browseChapters(books, corpus, chapters, maxSections);
+    browsed = selected.length > 0;
+  }
+
   // Fetch each needed chapter shard once, not once per section.
   const shardKeys = [...new Set(selected.map((s) => `${s.slug}|${s.sh}`))];
   const shards = new Map();
@@ -173,7 +207,7 @@ export async function searchTextbook(args = {}, deps = {}) {
     });
   }
 
-  return { query, hits, missing, terms: tokenize(query) };
+  return { query, hits, missing, browsed, terms: tokenize(query) };
 }
 
 // --- prompt rendering -------------------------------------------------------
@@ -226,14 +260,27 @@ export function formatSectionsForPrompt(result, opts = {}) {
     : DEFAULT_INCLUDE;
   const include = new Set(requested.length ? requested : DEFAULT_INCLUDE);
 
+  // Deliberately does NOT invite another search.  A turn gets one textbook
+  // lookup -- the server drops the tool once excerpts exist -- so "try
+  // different terms" is an instruction the model cannot carry out, and it
+  // spent whole turns calling the tool again into a server that silently
+  // dropped the call.  Say the lookup is spent and give it something it can
+  // actually do.
   if (!result || !result.hits || !result.hits.length) {
     return `=== TEXTBOOK EXCERPTS ===\nNo section of the enabled textbooks matched ${
       result && result.query ? `"${result.query}"` : "that request"
-    }. Say so rather than inventing textbook content, and try different terms or name sections from the catalog.\n`;
+    }. This turn's textbook lookup is spent and the search tool is no longer available, so do not ` +
+      "try to search again. Either answer from general physics knowledge and say plainly that the " +
+      "question is not grounded in the textbook, or ask the user which sections to use. Never invent " +
+      "textbook content or cite a section you were not shown.\n";
   }
 
   const head = "=== TEXTBOOK EXCERPTS ===\n" +
     (result.query ? `Retrieved for: "${result.query}"\n` : "") +
+    (result.browsed
+      ? "No section scored highly enough to rank, so these are the requested chapter's " +
+        "sections in book order.\n"
+      : "") +
     "Reference only. Write original, parametrized questions in this style; do not " +
     "reproduce this text verbatim. Cite only the section handles shown below.\n";
 
