@@ -200,6 +200,17 @@ function mattext(html) {
   return el("material", {}, [el("mattext", { texttype: "text/html" }, [text(html)])]);
 }
 
+// Spliced into the stem's mattext HTML exactly like the browser preview and
+// exam_core.py/render.py embed it (same <div> wrapper, same rationale in
+// their svg_figure_html). UNVERIFIED against a real D2L import, same as the
+// rest of this module (see the cc.fib.v0p1 comment below): D2L's HTML
+// sanitizer may or may not preserve an inline <svg> the way it preserves the
+// MathML this module already relies on.
+function svgFigureHtml(question) {
+  if (!question.svg) return "";
+  return `<div style="max-width:100%;overflow-x:auto;text-align:center">${question.svg}</div>`;
+}
+
 // ── QTI 1.2 <item> builder ───────────────────────────────────────────────────
 
 // question: either
@@ -233,7 +244,8 @@ async function buildMultipleChoiceItemNode(question, opts) {
   }
   const correctChoiceId = CHOICE_IDS[correctIdx];
 
-  const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures });
+  const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures })
+    + svgFigureHtml(question);
   const responseLabels = [];
   for (let i = 0; i < 5; i++) {
     const choiceHtml = await buildMattextHtml(question.choices[i], { qid: question.qid, latexToMathML, failures });
@@ -296,7 +308,8 @@ async function buildNumericalItemNode(question, opts) {
     throw new Error(`buildItemNode: question ${question.qid} has a negative tolerance "${question.tolerance}"`);
   }
 
-  const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures });
+  const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures })
+    + svgFigureHtml(question);
 
   const itemmetadata = el("itemmetadata", {}, [
     el("qtimetadata", {}, [

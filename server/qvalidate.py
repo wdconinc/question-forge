@@ -32,6 +32,7 @@ import json
 import math
 import numbers
 import os
+import re
 import sys
 
 # Jinja2 settings must match the browser preview (index.html:1897-1901) and the
@@ -215,10 +216,54 @@ def _check_numerical_result(d: dict, seed: int) -> str:
     return _check_common_fields(d, seed)
 
 
-def _check_common_fields(d: dict, seed: int) -> str:
-    """topic/difficulty checks shared by both question types.
+_SVG_ROOT_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE | re.DOTALL)
 
-    Both are optional; index.html defaults them (1913-1914 / 2219-2220).
+
+def _check_svg(d: dict, seed: int) -> str:
+    """Return an error message, or "" if the optional 'svg' key is well-formed.
+
+    A falsy svg (missing, "", None) is not an error: a generator may only draw
+    a diagram for some random branches and return "" for the rest.
+
+    A <svg> with only a viewBox and no explicit width/height renders at zero
+    size in every render path (browser preview, render-all, QTI export) —
+    silently, with no exception — so this is worth catching here rather than
+    leaving the model (or the instructor) to discover it from a blank preview.
+    """
+    svg = d.get("svg")
+    if not svg:
+        return ""
+    at = f"(seed {seed})"
+    if not isinstance(svg, str):
+        return f"{at} 'svg' must be a string, got {type(svg).__name__}"
+
+    stripped = svg.strip()
+    root_match = _SVG_ROOT_RE.match(stripped)
+    # A self-closing root (<svg .../>) is itself a complete element with no
+    # separate closing tag — only require "</svg>" when the root didn't
+    # already close itself.
+    root_tag = root_match.group(0) if root_match else ""
+    self_closing = root_tag.rstrip().endswith("/>")
+    if not root_match or not (self_closing or "</svg>" in stripped):
+        return f"{at} 'svg' must be a complete '<svg ...>...</svg>' element"
+    # `\s` before the name excludes "stroke-width"/"data-height"-style attributes,
+    # which contain "width="/"height=" as a substring but are not the root sizing.
+    missing = [name for name in ("width", "height")
+               if not re.search(rf'\s{name}\s*=\s*["\']', root_tag, re.IGNORECASE)]
+    if missing:
+        return (
+            f"{at} the root <svg> element is missing explicit "
+            f"{' and '.join(missing)} attribute(s) — a <svg> with only viewBox "
+            'renders at zero size; add e.g. width="320" height="200"'
+        )
+    return ""
+
+
+def _check_common_fields(d: dict, seed: int) -> str:
+    """topic/difficulty/svg checks shared by both question types.
+
+    All three are optional; index.html defaults topic/difficulty (1913-1914 /
+    2219-2220) and treats a missing/falsy svg as "no diagram".
     """
     at = f"(seed {seed})"
     if "topic" in d and not isinstance(d["topic"], str):
@@ -232,7 +277,7 @@ def _check_common_fields(d: dict, seed: int) -> str:
         if not 1 <= difficulty <= 4:
             return f"{at} 'difficulty' must be between 1 (easy) and 4 (hardest), got {difficulty}"
 
-    return ""
+    return _check_svg(d, seed)
 
 
 def _check_result(d: object, seed: int) -> str:

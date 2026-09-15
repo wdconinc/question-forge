@@ -135,6 +135,23 @@ def apply_answer_positions(data_list: list, positions: list, rng: np.random.Gene
         datum["answer"] = target
 
 
+def svg_figure_html(data: dict) -> str:
+    """Return the <div>-wrapped <svg> figure, or "" if this question has none.
+
+    Wrapped in a <div> rather than the bare <svg>: a line starting with "<svg"
+    is not one of CommonMark's recognized HTML block tags, so a single-line
+    <svg>...</svg> string gets wrapped in a stray <p> by the Markdown renderer.
+    <div> IS a recognized block tag, so wrapping in one guarantees the figure
+    renders as its own block regardless of how the question's Python code
+    formatted the svg string. The inline style caps it to the available width
+    instead of overflowing a narrow preview pane or printed page.
+    """
+    svg = data.get("svg")
+    if not svg:
+        return ""
+    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+
+
 def render_question(q_num: int, data: dict) -> tuple[str, str]:
     """Render a single question as a Markdown block.
 
@@ -143,16 +160,19 @@ def render_question(q_num: int, data: dict) -> tuple[str, str]:
     questions are not affected by apply_answer_positions and are rendered
     with a blank answer line instead of lettered choices.
     """
+    lines = [f"**{q_num}.** {data['question']}", ""]
+    figure = svg_figure_html(data)
+    if figure:
+        lines += [figure, ""]
     if data.get("type", "multiple_choice") == "numerical":
         from questions import phys_fmt
-        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        lines += ["Answer: ______________________", ""]
         unit_suffix = f" {data['unit']}" if data.get("unit") else ""
         ans_str = (
             f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
             f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
         )
         return "\n".join(lines), ans_str
-    lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
     lines.append("")
