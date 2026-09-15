@@ -239,10 +239,13 @@ def _check_svg(d: dict, seed: int) -> str:
 
     stripped = svg.strip()
     root_match = _SVG_ROOT_RE.match(stripped)
-    if not root_match or "</svg>" not in stripped:
+    # A self-closing root (<svg .../>) is itself a complete element with no
+    # separate closing tag — only require "</svg>" when the root didn't
+    # already close itself.
+    root_tag = root_match.group(0) if root_match else ""
+    self_closing = root_tag.rstrip().endswith("/>")
+    if not root_match or not (self_closing or "</svg>" in stripped):
         return f"{at} 'svg' must be a complete '<svg ...>...</svg>' element"
-
-    root_tag = root_match.group(0)
     # `\s` before the name excludes "stroke-width"/"data-height"-style attributes,
     # which contain "width="/"height=" as a substring but are not the root sizing.
     missing = [name for name in ("width", "height")

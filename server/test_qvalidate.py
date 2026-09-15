@@ -430,6 +430,14 @@ class TestSvgContract(unittest.TestCase):
         self.assertEqual(state, "invalid")
         self.assertIn("complete '<svg", message)
 
+    def test_self_closing_svg_root_is_a_complete_element(self):
+        # A self-closing root (<svg .../>) has no separate closing tag by
+        # construction, but it IS a complete, renderable element — it must not
+        # be rejected as "incomplete" just because "</svg>" never appears.
+        self_closing = '<svg viewBox="0 0 10 10" width="100" height="50"/>'
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, repr(self_closing)))
+        self.assertEqual(state, "ok", message)
+
 
 def run_worker(template, python_code, expected_name, env_extra=None, timeout=30):
     """Drive qvalidate.py the way main.py does: a subprocess with a scrubbed env."""

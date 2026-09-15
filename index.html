@@ -2695,9 +2695,10 @@ function renderPreview(data) {
     const sigFigs = Number.isInteger(data.sig_figs) && data.sig_figs > 0 ? data.sig_figs : 3;
     const roundSig = n => (Number.isFinite(n) ? Number(n.toPrecision(sigFigs)) : n);
     const answerText = `${roundSig(data.answer)}${unitSuffix} (\u00b1 ${roundSig(data.tolerance)}${unitSuffix})`;
-    document.getElementById("preview-content").innerHTML =
+    document.getElementById("preview-content").innerHTML = DOMPurify.sanitize(
       `<div>${html}</div>` +
-      `<div class="preview-answer">\u2713 Correct: <strong>${answerText}</strong>${topicHtml}${diffHtml}</div>`;
+      `<div class="preview-answer">\u2713 Correct: <strong>${answerText}</strong>${topicHtml}${diffHtml}</div>`
+    );
   } else {
     let md = data.question + "\n\n" + figureMd;
     for (let i = 0; i < 5; i++) {
@@ -2705,9 +2706,10 @@ function renderPreview(data) {
     }
     const html = mdToHtml(md);
     const answerText = data.choices[LETTERS.indexOf(data.answer)] || "";
-    document.getElementById("preview-content").innerHTML =
+    document.getElementById("preview-content").innerHTML = DOMPurify.sanitize(
       `<div>${html}</div>` +
-      `<div class="preview-answer">\u2713 Correct: <strong>(${data.answer})</strong> ${escHtml(answerText)}${topicHtml}${diffHtml}</div>`;
+      `<div class="preview-answer">\u2713 Correct: <strong>(${data.answer})</strong> ${escHtml(answerText)}${topicHtml}${diffHtml}</div>`
+    );
   }
   if (window.MathJax?.typesetPromise) {
     MathJax.typesetPromise([document.getElementById("preview-content")]).catch(console.error);
