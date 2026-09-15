@@ -145,11 +145,15 @@ def svg_figure_html(data: dict) -> str:
     renders as its own block regardless of how the question's Python code
     formatted the svg string. The inline style caps it to the available width
     instead of overflowing a narrow preview pane or printed page.
+
+    The "mathjax_ignore" class keeps MathJax's DOM scan out of the diagram
+    (see exam_core.py's svg_figure_html for why); it has no effect on this
+    offline markdown-only path but keeps the two implementations identical.
     """
     svg = data.get("svg")
     if not svg:
         return ""
-    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+    return f'<div class="mathjax_ignore" style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
 
 
 def render_question(q_num: int, data: dict) -> tuple[str, str]:

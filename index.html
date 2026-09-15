@@ -529,7 +529,13 @@
     window.MathJax = {
       tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]] },
       startup: { typeset: false },
-      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre"] }
+      options: {
+        skipHtmlTags: ["script", "noscript", "style", "textarea", "pre"],
+        // Question SVG diagrams (svgFigureHtml) are tagged with this class so
+        // MathJax never reaches into an <svg><text> label — its replacement
+        // markup is invalid there and would just vanish instead of rendering.
+        ignoreHtmlClass: "mathjax_ignore"
+      }
     };
   </script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.19/lib/codemirror.css" integrity="sha512-7vaQ4LLdaXd2IuMd4MUQ6LRFIGbEwJI1aq6KYqL3RjbdQyUkRFhwZKmqmkBXurTFdGlx687lTN8FSJfX6Df8Gw==" crossorigin="anonymous">
@@ -1026,11 +1032,17 @@ def svg_figure_html(data):
     renders as its own block regardless of how the question's Python code
     formatted the svg string. The inline style caps it to the available width
     instead of overflowing a narrow preview pane or printed page.
+
+    The "mathjax_ignore" class keeps MathJax's DOM scan out of the diagram:
+    MathJax replaces a matched "$...$" span with an HTML container, which is
+    invalid inside an SVG <text> element and renders as nothing — so a stray
+    "$" in the SVG's own text would silently disappear instead of showing up
+    as literal text.
     """
     svg = data.get("svg")
     if not svg:
         return ""
-    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+    return f'<div class="mathjax_ignore" style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
 
 
 def render_question_block(q_num, data):
@@ -1289,11 +1301,15 @@ def svg_figure_html(data: dict) -> str:
     renders as its own block regardless of how the question's Python code
     formatted the svg string. The inline style caps it to the available width
     instead of overflowing a narrow preview pane or printed page.
+
+    The "mathjax_ignore" class keeps MathJax's DOM scan out of the diagram
+    (see exam_core.py's svg_figure_html for why); it has no effect on this
+    offline markdown-only path but keeps the two implementations identical.
     """
     svg = data.get("svg")
     if not svg:
         return ""
-    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+    return f'<div class="mathjax_ignore" style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
 
 
 def render_question(q_num: int, data: dict) -> tuple[str, str]:
@@ -2675,9 +2691,14 @@ json.dumps(_result)
 // (not the bare <svg>) so the Markdown renderer (mdToHtml, below) gives it its
 // own block instead of wrapping a single-line <svg>...</svg> string in a
 // stray <p>, and an inline max-width so it can't overflow the preview pane.
+// "mathjax_ignore" (paired with the MathJax `options.ignoreHtmlClass` config
+// below) keeps MathJax's DOM scan out of the diagram — MathJax replaces a
+// matched "$...$" span with an HTML container, which is invalid inside an
+// SVG <text> element and renders as nothing, so a stray "$" in the SVG's own
+// text would silently disappear instead of showing up as literal text.
 function svgFigureHtml(data) {
   if (!data.svg) return "";
-  return `<div style="max-width:100%;overflow-x:auto;text-align:center">${data.svg}</div>\n\n`;
+  return `<div class="mathjax_ignore" style="max-width:100%;overflow-x:auto;text-align:center">${data.svg}</div>\n\n`;
 }
 
 function renderPreview(data) {
@@ -2970,7 +2991,7 @@ function doDownloadPDF() {
   // closing the enclosing <script> tag; they are not gratuitous.
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Exam Paper ${safeActivePaper}</title>
-<script>window.MathJax={tex:{inlineMath:[["$","$"],["\\\\(","\\\\)"]]},startup:{typeset:false}};<\/script>
+<script>window.MathJax={tex:{inlineMath:[["$","$"],["\\\\(","\\\\)"]]},startup:{typeset:false},options:{ignoreHtmlClass:"mathjax_ignore"}};<\/script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml.js" integrity="sha512-dYOCdOl06012DI+59NDm+JDwE5nfEOHU3OSwP1ydeLK5/dUcUohVx2Ojd7kNqw711V8++78udRAZMOGoKYJgvw==" crossorigin="anonymous"><\/script>
 <style>
   body{font-family:Georgia,serif;font-size:13pt;line-height:1.7;max-width:700px;margin:40px auto;padding:0 20px}
@@ -3789,8 +3810,9 @@ Requirements:
   by \`viewBox\` alone renders at zero size (a silent failure, no exception).
 - Build the string with plain Python (f-strings), the same way \`question\`
   text is built — there is no separate template file for the SVG.
-- Keep text inside the SVG plain (numbers and units); avoid \`$...$\` inside an
-  SVG \`<text>\` element unless you specifically intend MathJax to typeset it.
+- Keep text inside the SVG plain (numbers and units): MathJax deliberately does
+  not typeset text inside the diagram, so a \`$...$\` span there is shown as
+  literal characters (e.g. \`$F$\`), not rendered math.
 
 Example — a box with a force arrow whose length scales with the force drawn
 for this question:
