@@ -353,6 +353,84 @@ class TestNumericalContract(unittest.TestCase):
         self.assertEqual(state, "invalid")
 
 
+# A valid sized <svg>, and the same picture with the root's width/height dropped —
+# used as the base for TestSvgContract's mutations.
+GOOD_SVG = '<svg viewBox="0 0 10 10" width="100" height="50" xmlns="http://www.w3.org/2000/svg"></svg>'
+
+
+def with_svg(python_code, svg_literal):
+    """Insert `"svg": <svg_literal>,` into GOOD_PYTHON/GOOD_NUMERICAL_PYTHON's return dict."""
+    return python_code.replace('"difficulty": 2,', f'"difficulty": 2,\n        "svg": {svg_literal},')
+
+
+class TestSvgContract(unittest.TestCase):
+    """The optional 'svg' key — see DEFAULT_SYSTEM_PROMPT's "Optional SVG diagram"
+    section in server/main.py. A <svg> with only a viewBox and no explicit
+    width/height renders at zero size with no exception, so this is the one
+    field-shape check worth enforcing here rather than leaving it to a blank
+    preview."""
+
+    def check(self, template=GOOD_TEMPLATE, python_code=GOOD_PYTHON, expected_name="q_good"):
+        return qvalidate.validate(template, python_code, expected_name=expected_name)
+
+    def test_sized_svg_is_ok(self):
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, repr(GOOD_SVG)))
+        self.assertEqual(state, "ok", message)
+
+    def test_sized_svg_is_ok_on_a_numerical_question(self):
+        state, message = self.check(python_code=with_svg(GOOD_NUMERICAL_PYTHON, repr(GOOD_SVG)))
+        self.assertEqual(state, "ok", message)
+
+    def test_missing_svg_key_is_ok(self):
+        # The overwhelming majority of questions have no diagram at all.
+        self.assertEqual(self.check(), ("ok", ""))
+
+    def test_empty_string_svg_is_ok(self):
+        # A generator may only draw a diagram for some random branches and
+        # return "" for the rest — that is "no diagram", not a validation error.
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, '""'))
+        self.assertEqual(state, "ok", message)
+
+    def test_non_string_svg_rejected(self):
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, "42"))
+        self.assertEqual(state, "invalid")
+        self.assertIn("'svg' must be a string", message)
+
+    def test_non_svg_string_rejected(self):
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, '"just some text"'))
+        self.assertEqual(state, "invalid")
+        self.assertIn("complete '<svg", message)
+
+    def test_missing_width_rejected(self):
+        no_width = '<svg viewBox="0 0 10 10" height="50"></svg>'
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, repr(no_width)))
+        self.assertEqual(state, "invalid")
+        self.assertIn("width", message)
+        self.assertIn("zero size", message)
+
+    def test_missing_height_rejected(self):
+        no_height = '<svg viewBox="0 0 10 10" width="100"></svg>'
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, repr(no_height)))
+        self.assertEqual(state, "invalid")
+        self.assertIn("height", message)
+
+    def test_stroke_width_on_a_child_does_not_satisfy_the_root_width_check(self):
+        # Regression guard: a naive "'width=' in svg" substring check would be
+        # fooled by stroke-width="2" on a nested element and never catch a
+        # root <svg> that has no width attribute of its own.
+        no_root_width = '<svg viewBox="0 0 10 10" height="50"><line stroke-width="2"/></svg>'
+        state, message = self.check(python_code=with_svg(GOOD_PYTHON, repr(no_root_width)))
+        self.assertEqual(state, "invalid")
+        self.assertIn("width", message)
+
+    def test_incomplete_svg_element_rejected(self):
+        # Missing the closing tag entirely.
+        state, message = self.check(
+            python_code=with_svg(GOOD_PYTHON, '\'<svg width="100" height="50">\''))
+        self.assertEqual(state, "invalid")
+        self.assertIn("complete '<svg", message)
+
+
 def run_worker(template, python_code, expected_name, env_extra=None, timeout=30):
     """Drive qvalidate.py the way main.py does: a subprocess with a scrubbed env."""
     env = dict(qvalidate.SANDBOX_ENV)

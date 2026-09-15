@@ -712,6 +712,8 @@
               <option value="multiple_choice">Multiple Choice</option>
               <option value="numerical">Numerical Entry</option>
             </select>
+            <button class="btn-fix-ai" id="btn-svg-ai" disabled title="Connect AI first"
+              style="font-size:10.5px;padding:1px 8px" aria-label="Add an SVG diagram with AI">🖼 Diagram</button>
           </div>
           <div class="ep-body" id="wrap-python"></div>
         </div>
@@ -776,6 +778,10 @@
 #   choices   : list[str] of exactly 5 items — answer choices (a)–(e)
 #   answer    : str   — correct choice letter, one of 'a','b','c','d','e'
 #   topic     : str   — brief topic label (e.g. "Ch.7 Work-Energy Theorem")
+#   svg       : str, optional — a complete "<svg>...</svg>" diagram, rendered
+#               between the question text and the choices. The root <svg> must
+#               set explicit width/height attributes (not just viewBox), or it
+#               renders at zero size.
 
 import math
 import os
@@ -1010,17 +1016,37 @@ def apply_answer_positions(data_list, positions, rng):
         datum["answer"]  = target
 
 
+def svg_figure_html(data):
+    """Return the <div>-wrapped <svg> figure, or "" if this question has none.
+
+    Wrapped in a <div> rather than the bare <svg>: a line starting with "<svg"
+    is not one of CommonMark's recognized HTML block tags, so a single-line
+    <svg>...</svg> string gets wrapped in a stray <p> by the Markdown renderer.
+    <div> IS a recognized block tag, so wrapping in one guarantees the figure
+    renders as its own block regardless of how the question's Python code
+    formatted the svg string. The inline style caps it to the available width
+    instead of overflowing a narrow preview pane or printed page.
+    """
+    svg = data.get("svg")
+    if not svg:
+        return ""
+    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+
+
 def render_question_block(q_num, data):
+    lines = [f"**{q_num}.** {data['question']}", ""]
+    figure = svg_figure_html(data)
+    if figure:
+        lines += [figure, ""]
     if data.get("type", "multiple_choice") == "numerical":
         from questions import phys_fmt
-        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        lines += ["Answer: ______________________", ""]
         unit_suffix = f" {data['unit']}" if data.get("unit") else ""
         ans_str = (
             f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
             f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
         )
         return "\n".join(lines), ans_str
-    lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
     lines.append("")
@@ -1253,6 +1279,23 @@ def apply_answer_positions(data_list: list, positions: list, rng: np.random.Gene
         datum["answer"] = target
 
 
+def svg_figure_html(data: dict) -> str:
+    """Return the <div>-wrapped <svg> figure, or "" if this question has none.
+
+    Wrapped in a <div> rather than the bare <svg>: a line starting with "<svg"
+    is not one of CommonMark's recognized HTML block tags, so a single-line
+    <svg>...</svg> string gets wrapped in a stray <p> by the Markdown renderer.
+    <div> IS a recognized block tag, so wrapping in one guarantees the figure
+    renders as its own block regardless of how the question's Python code
+    formatted the svg string. The inline style caps it to the available width
+    instead of overflowing a narrow preview pane or printed page.
+    """
+    svg = data.get("svg")
+    if not svg:
+        return ""
+    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+
+
 def render_question(q_num: int, data: dict) -> tuple[str, str]:
     """Render a single question as a Markdown block.
 
@@ -1261,16 +1304,19 @@ def render_question(q_num: int, data: dict) -> tuple[str, str]:
     questions are not affected by apply_answer_positions and are rendered
     with a blank answer line instead of lettered choices.
     """
+    lines = [f"**{q_num}.** {data['question']}", ""]
+    figure = svg_figure_html(data)
+    if figure:
+        lines += [figure, ""]
     if data.get("type", "multiple_choice") == "numerical":
         from questions import phys_fmt
-        lines = [f"**{q_num}.** {data['question']}", "", "Answer: ______________________", ""]
+        lines += ["Answer: ______________________", ""]
         unit_suffix = f" {data['unit']}" if data.get("unit") else ""
         ans_str = (
             f"{phys_fmt(data['answer'], data.get('sig_figs', 3))}{unit_suffix} "
             f"(± {phys_fmt(data['tolerance'], 2)}{unit_suffix})"
         )
         return "\n".join(lines), ans_str
-    lines = [f"**{q_num}.** {data['question']}", ""]
     for letter, choice in zip(LETTERS, data["choices"]):
         lines.append(f"({letter}) {choice}")
     lines.append("")
@@ -2589,6 +2635,7 @@ if _d.get("type", "multiple_choice") == "numerical":
     _result = {
         "type": "numerical",
         "question": _d["question"],
+        "svg": _d.get("svg") or "",
         "answer": float(_d["answer"]),
         "tolerance": float(_d.get("tolerance", 0)),
         "unit": _d.get("unit", ""),
@@ -2600,6 +2647,7 @@ else:
     _result = {
         "type": "multiple_choice",
         "question": _d["question"],
+        "svg": _d.get("svg") or "",
         "choices":  list(_d["choices"]),
         "answer":   _d["answer"],
         "topic":    _d.get("topic", ""),
@@ -2623,13 +2671,23 @@ json.dumps(_result)
   }
 }
 
+// Wrapped the same way as exam_core.py/render.py's svg_figure_html: a <div>
+// (not the bare <svg>) so marked.parse() gives it its own block instead of
+// wrapping a single-line <svg>...</svg> string in a stray <p>, and an inline
+// max-width so it can't overflow the preview pane.
+function svgFigureHtml(data) {
+  if (!data.svg) return "";
+  return `<div style="max-width:100%;overflow-x:auto;text-align:center">${data.svg}</div>\n\n`;
+}
+
 function renderPreview(data) {
   lastPreviewError = null;   // successful render — no error to report
   const topicHtml = data.topic ? ` &nbsp;|&nbsp; ${escHtml(data.topic)}` : "";
   const diffHtml  = ` &nbsp;|&nbsp; ${STARS[data.difficulty] || "\u2605\u2605"}`;
+  const figureMd  = svgFigureHtml(data);
 
   if (data.type === "numerical") {
-    const html = marked.parse(data.question + "\n\n");
+    const html = marked.parse(data.question + "\n\n" + figureMd);
     const unitSuffix = data.unit ? ` ${escHtml(data.unit)}` : "";
     // Round to the question's own sig_figs (default 3, matching phys_fmt's
     // default) for display only \u2014 avoids float noise like
@@ -2641,7 +2699,7 @@ function renderPreview(data) {
       `<div>${html}</div>` +
       `<div class="preview-answer">\u2713 Correct: <strong>${answerText}</strong>${topicHtml}${diffHtml}</div>`;
   } else {
-    let md = data.question + "\n\n";
+    let md = data.question + "\n\n" + figureMd;
     for (let i = 0; i < 5; i++) {
       md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
     }
@@ -2689,6 +2747,35 @@ function doFixWithAI() {
   // The full error is already included in the request as preview_error.
   const input = document.getElementById("chat-input");
   input.value = "Fix the preview error shown in the preview panel.";
+  doSendChat();
+}
+
+function updateSvgAiButton() {
+  const btn = document.getElementById("btn-svg-ai");
+  if (!btn) return;
+  const connected = aiState.connected;
+  btn.disabled = !connected;
+  btn.title = connected
+    ? "Ask the AI to add (or refine) a parametrized SVG diagram for this question"
+    : "Connect AI first";
+}
+
+function doGenerateSvgWithAI() {
+  if (!aiState.connected) { toast("Connect AI first", "error"); return; }
+
+  // Open chat panel if not already open
+  const panel  = document.getElementById("chat-panel");
+  const rzChat = document.getElementById("rsz-chat");
+  if (!panel.classList.contains("open")) {
+    panel.classList.add("open");
+    rzChat.style.display = "";
+    aiState.panelOpen = true;
+    saveAIState();
+  }
+
+  const input = document.getElementById("chat-input");
+  input.value = "Add (or improve) an optional SVG diagram for this question, " +
+    "using the question's own randomized values so the picture always matches the numbers.";
   doSendChat();
 }
 
@@ -3531,6 +3618,7 @@ async function main() {
   on("btn-import-sb",  doImportZip);
   on("btn-new-set",    doNewSet);
   on("btn-new-param",  doNewParam);
+  on("btn-svg-ai",     doGenerateSvgWithAI);
 
   // Seed override input in preview header
   document.getElementById("preview-seed-input")?.addEventListener("change", e => {
@@ -3659,6 +3747,47 @@ there is no need to randomize the correct answer position yourself.
 
 Numerical questions have no lettered choices and are graded as "within tolerance
 of answer", not by exact match.
+
+### Optional SVG diagram
+
+Either question type may also include an optional \`svg\` key: a complete
+\`<svg>...</svg>\` string, rendered between the question text and the choices.
+Use it for a diagram that clarifies the physics setup — an inclined plane, a
+force-vector diagram, a pulley system, a circuit — built from the SAME random
+values used in the question text, so the picture always matches the numbers.
+Most questions do not need one; only add it when a picture genuinely
+clarifies the problem, not as decoration.
+
+  svg : str, optional — a complete \`<svg>...</svg>\` element
+
+Requirements:
+- The root \`<svg>\` element MUST set explicit \`width\` and \`height\` attributes
+  in addition to \`viewBox\` — e.g. \`width="320" height="200"\`. A \`<svg>\` sized
+  by \`viewBox\` alone renders at zero size (a silent failure, no exception).
+- Build the string with plain Python (f-strings), the same way \`question\`
+  text is built — there is no separate template file for the SVG.
+- Keep text inside the SVG plain (numbers and units); avoid \`$...$\` inside an
+  SVG \`<text>\` element unless you specifically intend MathJax to typeset it.
+
+Example — a box with a force arrow whose length scales with the force drawn
+for this question:
+
+\`\`\`python
+force = round(rng.uniform(10, 40), 1)
+arrow_len = 60 + force * 2
+svg = (
+    '<svg viewBox="0 0 240 120" width="300" height="150" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" '
+    'refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1e3a5f"/>'
+    '</marker></defs>'
+    '<rect x="40" y="45" width="30" height="30" fill="#333"/>'
+    f'<line x1="70" y1="60" x2="{70 + arrow_len}" y2="60" stroke="#1e3a5f" '
+    'stroke-width="3" marker-end="url(#arrow)"/>'
+    f'<text x="70" y="90" font-size="11">F = {force} N</text>'
+    '</svg>'
+)
+\`\`\`
 
 ## Helper functions (import from \`questions\`)
 
@@ -3926,6 +4055,7 @@ async function doAIConnect(silent = false) {
     document.getElementById("btn-ai-connect").style.display = "none";
     document.getElementById("btn-ai-disconnect").style.display = "";
     updateFixAIButton();
+    updateSvgAiButton();
     if (!silent) appendChatMsg("system-note", `Connected to ${escHtml(url)} · model: ${escHtml(activeModel)}`);
   } catch (e) {
     const msg = e.message || "Connection failed";
@@ -3948,6 +4078,7 @@ function markAIDisconnected(statusMsg = "Disconnected.", keepCredentials = true)
   document.getElementById("btn-ai-disconnect").style.display = "none";
   document.getElementById("ai-conn-status").textContent = statusMsg;
   updateFixAIButton();
+  updateSvgAiButton();
 }
 
 function doAIDisconnect() {

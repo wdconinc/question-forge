@@ -422,6 +422,47 @@ there is no need to randomize the correct answer position yourself.
 Numerical questions have no lettered choices and are graded as "within tolerance
 of answer", not by exact match.
 
+### Optional SVG diagram
+
+Either question type may also include an optional `svg` key: a complete
+`<svg>...</svg>` string, rendered between the question text and the choices.
+Use it for a diagram that clarifies the physics setup — an inclined plane, a
+force-vector diagram, a pulley system, a circuit — built from the SAME random
+values used in the question text, so the picture always matches the numbers.
+Most questions do not need one; only add it when a picture genuinely
+clarifies the problem, not as decoration.
+
+  svg : str, optional — a complete `<svg>...</svg>` element
+
+Requirements:
+- The root `<svg>` element MUST set explicit `width` and `height` attributes
+  in addition to `viewBox` — e.g. `width="320" height="200"`. A `<svg>` sized
+  by `viewBox` alone renders at zero size (a silent failure, no exception).
+- Build the string with plain Python (f-strings), the same way `question`
+  text is built — there is no separate template file for the SVG.
+- Keep text inside the SVG plain (numbers and units); avoid `$...$` inside an
+  SVG `<text>` element unless you specifically intend MathJax to typeset it.
+
+Example — a box with a force arrow whose length scales with the force drawn
+for this question:
+
+```python
+force = round(rng.uniform(10, 40), 1)
+arrow_len = 60 + force * 2
+svg = (
+    '<svg viewBox="0 0 240 120" width="300" height="150" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" '
+    'refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1e3a5f"/>'
+    '</marker></defs>'
+    '<rect x="40" y="45" width="30" height="30" fill="#333"/>'
+    f'<line x1="70" y1="60" x2="{70 + arrow_len}" y2="60" stroke="#1e3a5f" '
+    'stroke-width="3" marker-end="url(#arrow)"/>'
+    f'<text x="70" y="90" font-size="11">F = {force} N</text>'
+    '</svg>'
+)
+```
+
 ## Helper functions (import from `questions`)
 
 ```python

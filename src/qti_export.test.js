@@ -127,6 +127,29 @@ test("buildItemNode rejects an invalid answer letter", async () => {
   );
 });
 
+test("buildItemNode splices an optional svg figure into the stem, wrapped in a max-width div", async () => {
+  const question = {
+    qid: "q_diagram",
+    question: "A block on an incline.",
+    svg: '<svg viewBox="0 0 10 10" width="100" height="50"><rect width="10" height="10"/></svg>',
+    choices: ["1", "2", "3", "4", "5"],
+    answer: "a",
+  };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  // Same escaping story as the MathML test above: the <div>/<svg> markup is
+  // HTML embedded inside mattext's text/html content, escaped exactly once.
+  assert.match(xml, /&lt;div style="max-width:100%;overflow-x:auto;text-align:center"&gt;&lt;svg viewBox="0 0 10 10" width="100" height="50"&gt;&lt;rect width="10" height="10"\/&gt;&lt;\/svg&gt;&lt;\/div&gt;/);
+});
+
+test("buildItemNode omits the figure div entirely when the question has no svg", async () => {
+  const question = { qid: "q_no_diagram", question: "x", choices: ["1", "2", "3", "4", "5"], answer: "a" };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assert.ok(!xml.includes("max-width:100%;overflow-x:auto"), "no svg means no figure wrapper");
+});
+
 test("buildItemNode (numerical) produces a well-formed <item> with response_num/render_fib, cc.fib.v0p1, and a vargte/varlte tolerance range", async () => {
   const question = {
     qid: "q_numeric",
@@ -149,6 +172,22 @@ test("buildItemNode (numerical) produces a well-formed <item> with response_num/
   assert.match(xml, /<setvar action="Set" varname="SCORE">100<\/setvar>/);
   assert.ok(!xml.includes("response_label"), "numerical items must not have MC response_labels");
   assert.ok(!xml.includes("render_choice"), "numerical items must not use render_choice");
+});
+
+test("buildItemNode (numerical) splices an optional svg figure into the stem too", async () => {
+  const question = {
+    qid: "q_numeric_diagram",
+    type: "numerical",
+    question: "What is the final speed?",
+    svg: '<svg viewBox="0 0 10 10" width="100" height="50"></svg>',
+    answer: 12.3,
+    tolerance: 0.5,
+    unit: "m/s",
+  };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  assert.match(xml, /&lt;div style="max-width:100%;overflow-x:auto;text-align:center"&gt;&lt;svg viewBox="0 0 10 10" width="100" height="50"&gt;&lt;\/svg&gt;&lt;\/div&gt;/);
 });
 
 test("buildItemNode (numerical) rejects a non-finite answer or tolerance", async () => {

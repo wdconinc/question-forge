@@ -5,6 +5,10 @@
 #   choices   : list[str] of exactly 5 items — answer choices (a)–(e)
 #   answer    : str   — correct choice letter, one of 'a','b','c','d','e'
 #   topic     : str   — brief topic label (e.g. "Ch.7 Work-Energy Theorem")
+#   svg       : str, optional — a complete "<svg>...</svg>" diagram, rendered
+#               between the question text and the choices. The root <svg> must
+#               set explicit width/height attributes (not just viewBox), or it
+#               renders at zero size.
 
 import math
 import os
