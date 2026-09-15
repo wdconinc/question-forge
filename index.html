@@ -2677,7 +2677,10 @@ function mdToHtml(src) {
     spans.push(m);
     return `\uE000MATH${spans.length - 1}\uE000`;
   });
-  return marked.parse(guarded).replace(/\uE000MATH(\d+)\uE000/g, (_, i) => escHtml(spans[i]));
+  return marked.parse(guarded).replace(/\uE000MATH(\d+)\uE000/g, (match, i) => {
+    const idx = Number(i);
+    return (idx >= 0 && idx < spans.length) ? escHtml(spans[idx]) : match;
+  });
 }
 
 // ── Fix-with-AI shortcut ───────────────────────────────────────────────────
@@ -4289,6 +4292,7 @@ async function doSendChat() {
     let needsBankSummary = false;
     let neededQuestionId = null;
     let neededTextbook = null;
+    let rafPending = false;
 
     while (!streamDone) {
       const { done, value } = await reader.read();
@@ -4312,8 +4316,14 @@ async function doSendChat() {
         try {
           if (evt.type === "text") {
             assistantText += evt.delta;
-            aEl.innerHTML = mdToHtml(assistantText);
-            aEl.scrollIntoView({ behavior: "smooth" });
+            if (!rafPending) {
+              rafPending = true;
+              requestAnimationFrame(() => {
+                aEl.innerHTML = mdToHtml(assistantText);
+                aEl.scrollIntoView({ behavior: "smooth" });
+                rafPending = false;
+              });
+            }
 
           } else if (evt.type === "tool_call") {
           if (evt.tool === "get_question_bank") {
