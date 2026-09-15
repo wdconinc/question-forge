@@ -2629,7 +2629,7 @@ function renderPreview(data) {
   const diffHtml  = ` &nbsp;|&nbsp; ${STARS[data.difficulty] || "\u2605\u2605"}`;
 
   if (data.type === "numerical") {
-    const html = marked.parse(data.question + "\n\n");
+    const html = mdToHtml(data.question + "\n\n");
     const unitSuffix = data.unit ? ` ${escHtml(data.unit)}` : "";
     // Round to the question's own sig_figs (default 3, matching phys_fmt's
     // default) for display only \u2014 avoids float noise like
@@ -2645,7 +2645,7 @@ function renderPreview(data) {
     for (let i = 0; i < 5; i++) {
       md += `(${LETTERS[i]}) ${data.choices[i] || ""}  \n`;
     }
-    const html = marked.parse(md);
+    const html = mdToHtml(md);
     const answerText = data.choices[LETTERS.indexOf(data.answer)] || "";
     document.getElementById("preview-content").innerHTML =
       `<div>${html}</div>` +
@@ -2660,6 +2660,24 @@ function escHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// marked.js applies CommonMark backslash-escaping (\, \; \! \: \% etc. all
+// collapse to the bare punctuation mark) before MathJax ever sees the text,
+// which silently eats LaTeX spacing commands — `F(r')\,dr'` was coming out
+// as `F(r'),dr'`. Pull math spans out into placeholders before handing the
+// text to marked, then splice the original TeX back into the resulting HTML
+// so MathJax receives it untouched.
+const MATH_SPAN_RE =
+  /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\((?:\\[\s\S]|[^\\])+?\\\)|\$(?:\\[\s\S]|[^\\$\n])+?\$/g;
+
+function mdToHtml(src) {
+  const spans = [];
+  const guarded = src.replace(MATH_SPAN_RE, (m) => {
+    spans.push(m);
+    return `\uE000MATH${spans.length - 1}\uE000`;
+  });
+  return marked.parse(guarded).replace(/\uE000MATH(\d+)\uE000/g, (_, i) => escHtml(spans[i]));
 }
 
 // ── Fix-with-AI shortcut ───────────────────────────────────────────────────
@@ -2823,7 +2841,7 @@ function showRenderOverlay(paper) {
   // Render markdown → HTML
   const { md, answers, seed } = _renderedPapers[_renderedActivePaper];
   const body = document.getElementById("render-overlay-body");
-  const renderedHtml = marked.parse(md) +
+  const renderedHtml = mdToHtml(md) +
     `<div class="answer-key"><strong>Answer Key — Paper ${_renderedActivePaper} (seed=${seed})</strong><br>` +
     answers.map((a, i) => `Q${String(i+1).padStart(2,"0")}: ${a}`).join(" &nbsp; ") + "</div>";
   body.innerHTML = DOMPurify.sanitize(renderedHtml);
@@ -2850,7 +2868,7 @@ function doDownloadPDF() {
   const { md, answers, seed } = _renderedPapers[_renderedActivePaper] || {};
   if (!md) return;
   const safeActivePaper = escHtml(_renderedActivePaper);
-  const bodyHtml = marked.parse(md) +
+  const bodyHtml = mdToHtml(md) +
     `<div style="margin-top:2em;padding:10px;background:#f5f5f5;border-radius:4px;font-size:12px;color:#555">` +
     `<strong>Answer Key — Paper ${safeActivePaper} (seed=${seed})</strong><br>` +
     answers.map((a, i) => `Q${String(i+1).padStart(2,"0")}: ${a}`).join(" &nbsp; ") + "</div>";
@@ -4294,7 +4312,7 @@ async function doSendChat() {
         try {
           if (evt.type === "text") {
             assistantText += evt.delta;
-            aEl.innerHTML = marked.parse(assistantText);
+            aEl.innerHTML = mdToHtml(assistantText);
             aEl.scrollIntoView({ behavior: "smooth" });
 
           } else if (evt.type === "tool_call") {
