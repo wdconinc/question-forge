@@ -440,8 +440,9 @@ Requirements:
   by `viewBox` alone renders at zero size (a silent failure, no exception).
 - Build the string with plain Python (f-strings), the same way `question`
   text is built — there is no separate template file for the SVG.
-- Keep text inside the SVG plain (numbers and units); avoid `$...$` inside an
-  SVG `<text>` element unless you specifically intend MathJax to typeset it.
+- Keep text inside the SVG plain (numbers and units): MathJax deliberately does
+  not typeset text inside the diagram, so a `$...$` span there is shown as
+  literal characters (e.g. `$F$`), not rendered math.
 
 Example — a box with a force arrow whose length scales with the force drawn
 for this question:
