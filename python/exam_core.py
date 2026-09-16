@@ -23,7 +23,6 @@ def assign_answer_positions(n, rng):
     if n % 5 == 0:
         pool = np.array(LETTERS * (n // 5))
     else:
-        # Fallback: pad pool to next multiple of 5, then truncate
         padded = (n // 5 + 1) * 5
         pool = np.array(LETTERS * (padded // 5))
         rng.shuffle(pool)
@@ -144,23 +143,25 @@ def render_paper(question_bank, question_order, meta, seed):
 
     for qid in question_order:
         q = question_bank[qid]
-        # Monkey-patch render_template BEFORE exec so from-import captures the patched version
-        _tpl = _j2.Environment(
-            trim_blocks=True, lstrip_blocks=True,
-            keep_trailing_newline=False,
-            undefined=_j2.StrictUndefined,
-        ).from_string(q["template"])
-        def _rt(name, params, _t=_tpl):
-            return _t.render(**params).strip()
         _orig_rt = _qmod.render_template
-        _qmod.render_template = _rt
         try:
+            # Monkey-patch render_template BEFORE exec so from-import captures the patched version
+            _tpl = _j2.Environment(
+                trim_blocks=True, lstrip_blocks=True,
+                keep_trailing_newline=False,
+                undefined=_j2.StrictUndefined,
+            ).from_string(q["template"])
+            def _rt(name, params, _t=_tpl):
+                return _t.render(**params).strip()
+            _qmod.render_template = _rt
             ns = {}
             exec(compile(q["python_code"], qid + ".py", "exec"), ns)
             q_rng = np.random.default_rng(rng.integers(0, 2**63))
             d = ns["generate"](q_rng)
             d["qid"] = qid
             data_orig.append(d)
+        except Exception as exc:
+            raise RuntimeError(f"QUESTION_ERROR\n{qid}\n{exc}") from exc
         finally:
             _qmod.render_template = _orig_rt
 
@@ -177,3 +178,4 @@ def render_paper(question_bank, question_order, meta, seed):
         lines.append(block)
         answers.append(ans)
     return "\n".join(lines), answers, data
+
