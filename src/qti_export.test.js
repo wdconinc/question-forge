@@ -403,6 +403,19 @@ test("groupItemsIntoSections disambiguates a section ident against the shared us
   assert.equal(child.node.attrs.ident, "section_q01_2");
 });
 
+test("groupItemsIntoSections never merges unrelated qid-less questions into one section", () => {
+  // Both items coerce to the same "" grouping key (see FALLBACK_ID), but they
+  // are two different questions that just happen to lack a qid -- seeded and
+  // adjacent must not be enough to treat them as one question's versions.
+  const items = [
+    { id: "q_item__seed42", node: el("item", { ident: "q_item__seed42" }), qid: "", title: "First", seed: 42 },
+    { id: "q_item_2__seed137", node: el("item", { ident: "q_item_2__seed137" }), qid: "", title: "Second", seed: 137 },
+  ];
+  const children = groupItemsIntoSections(items, new Set());
+  assert.equal(children.length, 2);
+  assert.ok(children.every(c => c.node.tag === "item"), "unrelated qid-less questions must never share a section");
+});
+
 test("buildQtiPackage wraps a question's full set of randomized versions in one named <section>, titled with the base (unsuffixed) title", async () => {
   class FakeZip {
     constructor() { this.files = {}; }

@@ -379,7 +379,11 @@ export function groupItemsIntoSections(items, usedIds) {
     const group = items.slice(i, j);
     i = j;
 
-    const isVersioned = group.length > 1 && group.every(it => it.seed !== null && it.seed !== undefined);
+    // qid === "" means "no usable qid at all" (see FALLBACK_ID); several such
+    // questions would otherwise share this empty grouping key and could get
+    // merged into one section despite being unrelated, so a real, non-empty
+    // qid is required before treating a group as one question's versions.
+    const isVersioned = qid !== "" && group.length > 1 && group.every(it => it.seed !== null && it.seed !== undefined);
     if (!isVersioned) {
       children.push(...group.map(it => ({ id: it.id, node: it.node })));
       continue;
