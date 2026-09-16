@@ -152,7 +152,7 @@ test("buildItemNode omits the figure div entirely when the question has no svg",
   assert.ok(!xml.includes("max-width:100%;overflow-x:auto"), "no svg means no figure wrapper");
 });
 
-test("buildItemNode (numerical) produces a well-formed <item> with response_num/render_fib, cc.fib.v0p1, and a vargte/varlte tolerance range", async () => {
+test("buildItemNode (numerical) produces a well-formed <item> with response_str/render_fib and a bounded list of varequal alternatives spanning the tolerance range", async () => {
   const question = {
     qid: "q_numeric",
     title: "q_numeric",
@@ -167,13 +167,72 @@ test("buildItemNode (numerical) produces a well-formed <item> with response_num/
   assert.equal(id, "q_numeric");
   assertWellFormedXmlFragment(xml);
   assert.match(xml, /<fieldlabel>cc_profile<\/fieldlabel><fieldentry>cc\.fib\.v0p1<\/fieldentry>/);
-  assert.match(xml, /<response_num ident="response1" rcardinality="Single" numtype="Decimal">/);
-  assert.match(xml, /<render_fib fibtype="Decimal"/);
-  assert.match(xml, /<vargte respident="response1">11\.8<\/vargte>/);
-  assert.match(xml, /<varlte respident="response1">12\.8<\/varlte>/);
+  assert.match(xml, /<response_str ident="response1" rcardinality="Single">/);
+  assert.match(xml, /<render_fib fibtype="String"/);
+  // 3 sig figs on 12.3 -> tenths precision, so 11.8..12.8 in steps of 0.1.
+  assert.match(xml, /<or>/);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 11);
+  assert.match(xml, /<varequal respident="response1">11\.8<\/varequal>/);
+  assert.match(xml, /<varequal respident="response1">12\.3<\/varequal>/);
+  assert.match(xml, /<varequal respident="response1">12\.8<\/varequal>/);
   assert.match(xml, /<setvar action="Set" varname="SCORE">100<\/setvar>/);
+  assert.match(xml, /Enter only the numeric value \(no units\), rounded to 3 significant figures\./);
   assert.ok(!xml.includes("response_label"), "numerical items must not have MC response_labels");
   assert.ok(!xml.includes("render_choice"), "numerical items must not use render_choice");
+  assert.ok(!xml.includes("vargte") && !xml.includes("varlte"),
+    "range matching isn't parsed by D2L's fib converter -- must use varequal alternatives");
+});
+
+test("buildItemNode (numerical) omits the unit caveat and uses the given sig_figs when there's no unit", async () => {
+  const question = {
+    qid: "q_no_unit",
+    type: "numerical",
+    question: "What is the ratio?",
+    answer: 3.14,
+    tolerance: 0.05,
+    sig_figs: 2,
+  };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  // 2 sig figs on 3.14 -> tenths precision, and only 3.1 itself falls in
+  // [3.09, 3.19].
+  assert.match(xml, /<varequal respident="response1">3\.1<\/varequal>/);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 1);
+  assert.ok(!xml.includes("<or>"), "a single alternative doesn't need an <or> wrapper");
+  assert.match(xml, /Enter your answer rounded to 2 significant figures\./);
+  assert.ok(!xml.includes("no units"), "no unit was given, so there's nothing to disclaim");
+});
+
+test("buildItemNode (numerical) falls back to a single exact-match alternative when the range is too wide to enumerate", async () => {
+  const question = {
+    qid: "q_wide_tolerance",
+    type: "numerical",
+    question: "What is the force?",
+    answer: 100,
+    tolerance: 50,
+  };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 1,
+    "101 candidate values at 1-unit steps exceeds the cap -- degrade to exact match rather than list them all");
+  assert.match(xml, /<varequal respident="response1">100<\/varequal>/);
+});
+
+test("buildItemNode (numerical) falls back to a single alternative for extreme magnitudes instead of enumerating plain-decimal strings nobody would type", async () => {
+  const question = {
+    qid: "q_extreme_magnitude",
+    type: "numerical",
+    question: "What is the energy in joules?",
+    answer: 1_200_000,
+    tolerance: 50_000,
+  };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 1);
+  assert.match(xml, /<varequal respident="response1">1200000<\/varequal>/);
 });
 
 test("buildItemNode (numerical) splices an optional svg figure into the stem too", async () => {
@@ -207,6 +266,31 @@ test("buildItemNode (numerical) rejects a negative tolerance", async () => {
   await assert.rejects(() =>
     buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
   );
+});
+
+test("buildItemNode (numerical) rejects a non-integer or non-positive sig_figs, but tolerates it being absent", async () => {
+  const base = { qid: "q_bad_sig_figs", type: "numerical", question: "x", answer: 10, tolerance: 0.5 };
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: 2.5 }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: 0 }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: "three" }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  // Omitted entirely still defaults to 3, same as before this validation existed.
+  const { node } = await buildItemNode(base, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.match(serialize(node), /rounded to 3 significant figures/);
+});
+
+test("buildItemNode (numerical) never asks Number#toFixed for more than 100 decimal places, however extreme the magnitude", async () => {
+  const question = { qid: "q_tiny_magnitude", type: "numerical", question: "x", answer: 1e-90, tolerance: 1e-92 };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 1,
+    "extreme magnitude falls back to a single alternative regardless of tolerance");
 });
 
 test("buildObjectBankXml wraps every item directly under one <objectbank> (no <section> nesting)", async () => {
