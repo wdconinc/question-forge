@@ -21,7 +21,7 @@ const MIRRORS = [
 ];
 
 function extractScriptBlock(id) {
-  const re = new RegExp(`<script type="text/plain" id="${id}">\\n([\\s\\S]*?)</script>`);
+  const re = new RegExp(`<script type="text/plain" id="${id}">\\r?\\n([\\s\\S]*?)</script>`);
   const match = INDEX_HTML.match(re);
   assert.ok(match, `could not find <script id="${id}"> block in index.html`);
   return match[1];
