@@ -61,11 +61,17 @@ def svg_figure_html(data):
     renders as its own block regardless of how the question's Python code
     formatted the svg string. The inline style caps it to the available width
     instead of overflowing a narrow preview pane or printed page.
+
+    The "mathjax_ignore" class keeps MathJax's DOM scan out of the diagram:
+    MathJax replaces a matched "$...$" span with an HTML container, which is
+    invalid inside an SVG <text> element and renders as nothing — so a stray
+    "$" in the SVG's own text would silently disappear instead of showing up
+    as literal text.
     """
     svg = data.get("svg")
     if not svg:
         return ""
-    return f'<div style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
+    return f'<div class="mathjax_ignore" style="max-width:100%;overflow-x:auto;text-align:center">{svg}</div>'
 
 
 def render_question_block(q_num, data):
