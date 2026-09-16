@@ -202,8 +202,7 @@ function mattext(html) {
 
 // Spliced into the stem's mattext HTML exactly like the browser preview and
 // exam_core.py/render.py embed it (same <div> wrapper, same rationale in
-// their svg_figure_html). UNVERIFIED against a real D2L import, same as the
-// rest of this module (see the cc.fib.v0p1 comment below): D2L's HTML
+// their svg_figure_html). UNVERIFIED against a real D2L import: D2L's HTML
 // sanitizer may or may not preserve an inline <svg> the way it preserves the
 // MathML this module already relies on.
 function svgFigureHtml(question) {
@@ -277,16 +276,28 @@ async function buildMultipleChoiceItemNode(question, opts) {
   return { id, node: el("item", { ident: id, title }, [itemmetadata, presentation, resprocessing]) };
 }
 
-// Numeric fill-in-the-blank item: standard QTI 1.2 ASI response_num/render_fib,
-// with a tolerance range matched via <and><vargte/><varlte/></and>.
+// Numeric fill-in-the-blank item: QTI 1.2 ASI response_str/render_fib, graded
+// via a bounded list of literal exact-match alternatives (see
+// enumerateNumericAnswers) rather than a true numeric range.
 //
-// UNVERIFIED cc_profile choice: Common Cartridge 1.1's formal profile list has
-// no dedicated numeric-tolerance type — cc.fib.v0p1 is defined there for
-// literal string matching, not numeric ranges. It's the closest available
-// signal, used here as a best-effort extrapolation (same spirit as the
-// cc.multiple_choice.v0p1 discovery above), not a confirmed-correct value.
-// Treat a numerical export as unverified until confirmed with a real D2L
-// test-import, same as the multiple-choice exporter needed.
+// CONFIRMED against a real D2L import: this always lands as a D2L "Short
+// Answer" question, never a native "Numeric" type. That's not a mislabeling
+// bug to fix — D2L's Question Library has no numeric type reachable from ANY
+// file-based import path (not CSV bulk-upload, not Common Cartridge 1.1, not
+// Thin Common Cartridge 1.3; all three published type lists top out at
+// fill-in-blank/short-answer). cc.fib.v0p1 is the correct, spec-compliant
+// profile choice here. The actual bug was resprocessing: an earlier version
+// matched the tolerance range via <and><vargte/><varlte/></and>, but the fib
+// profile only defines literal <varequal> matching (same mechanism the
+// multiple-choice exporter above relies on) — D2L's Common Cartridge
+// converter had no way to parse a numeric range condition, so the imported
+// question likely had no working correct answer at all, on top of the wrong
+// type label.
+//
+// Still open: whether D2L's Short Answer grading actually honors multiple
+// <varequal> alternatives the way this assumes (same "confirm with a real
+// test-import" caveat the multiple-choice exporter needed before it was
+// verified working).
 async function buildNumericalItemNode(question, opts) {
   const { latexToMathML } = opts;
   const usedIds = opts.usedIds || new Set();
@@ -307,9 +318,18 @@ async function buildNumericalItemNode(question, opts) {
   if (tolerance < 0) {
     throw new Error(`buildItemNode: question ${question.qid} has a negative tolerance "${question.tolerance}"`);
   }
+  const rawSigFigs = Number(question.sig_figs);
+  const sigFigs = Number.isFinite(rawSigFigs) ? rawSigFigs : 3;
 
+  // Told to the student, not just baked into grading: without it, "type the
+  // number you computed" and "must exactly match one of N rounded strings"
+  // are different tasks, and only one of them is winnable.
+  const precisionNote = question.unit
+    ? `<p><em>Enter only the numeric value (no units), rounded to ${sigFigs} significant figures.</em></p>`
+    : `<p><em>Enter your answer rounded to ${sigFigs} significant figures.</em></p>`;
   const stemHtml = await buildMattextHtml(question.question, { qid: question.qid, latexToMathML, failures })
-    + svgFigureHtml(question);
+    + svgFigureHtml(question)
+    + precisionNote;
 
   const itemmetadata = el("itemmetadata", {}, [
     el("qtimetadata", {}, [
@@ -319,25 +339,65 @@ async function buildNumericalItemNode(question, opts) {
 
   const presentation = el("presentation", {}, [
     mattext(stemHtml),
-    el("response_num", { ident: "response1", rcardinality: "Single", numtype: "Decimal" }, [
-      el("render_fib", { fibtype: "Decimal", rows: "1", columns: "10", prompt: "Box" }),
+    el("response_str", { ident: "response1", rcardinality: "Single" }, [
+      el("render_fib", { fibtype: "String", rows: "1", columns: "10", prompt: "Box" }),
     ]),
   ]);
+
+  const alternatives = enumerateNumericAnswers(answer, tolerance, sigFigs);
+  const varequals = alternatives.map((v) => el("varequal", { respident: "response1" }, [text(v)]));
+  const conditionvar = el("conditionvar", {}, varequals.length > 1 ? [el("or", {}, varequals)] : varequals);
 
   const resprocessing = el("resprocessing", {}, [
     el("outcomes", {}, [el("decvar", { varname: "SCORE", vartype: "Decimal", minvalue: "0", maxvalue: "100" })]),
     el("respcondition", { continue: "No" }, [
-      el("conditionvar", {}, [
-        el("and", {}, [
-          el("vargte", { respident: "response1" }, [text(String(answer - tolerance))]),
-          el("varlte", { respident: "response1" }, [text(String(answer + tolerance))]),
-        ]),
-      ]),
+      conditionvar,
       el("setvar", { action: "Set", varname: "SCORE" }, [text("100")]),
     ]),
   ]);
 
   return { id, node: el("item", { ident: id, title }, [itemmetadata, presentation, resprocessing]) };
+}
+
+// Every value at the answer's own significant-figure precision that falls
+// within [answer - tolerance, answer + tolerance], formatted the same plain
+// fixed-decimal way a student would type it (see sigFigsPrecision). Always
+// returns at least one string. Falls back to a single alternative — the
+// answer rounded to its own precision, i.e. zero-tolerance exact match —
+// when the range can't be reasonably enumerated as literal alternatives:
+// either the magnitude is extreme enough that a student would type it in
+// scientific notation instead (too many equivalent spellings to enumerate),
+// or the range/step ratio would produce an unreasonably long answer list.
+const MAX_NUMERIC_ALTERNATIVES = 25;
+
+function enumerateNumericAnswers(answer, tolerance, sigFigs, maxCount = MAX_NUMERIC_ALTERNATIVES) {
+  const { decimalPlaces, extreme } = sigFigsPrecision(answer, sigFigs);
+  const singleAlternative = () => [answer.toFixed(decimalPlaces)];
+  if (extreme) return singleAlternative();
+
+  const step = Math.pow(10, -decimalPlaces);
+  const epsilon = 1e-6;
+  const kMin = Math.ceil((answer - tolerance) / step - epsilon);
+  const kMax = Math.floor((answer + tolerance) / step + epsilon);
+  const count = kMax - kMin + 1;
+  if (!(count >= 1) || count > maxCount) return singleAlternative();
+
+  const values = [];
+  for (let k = kMin; k <= kMax; k++) {
+    values.push((k * step).toFixed(decimalPlaces));
+  }
+  return values;
+}
+
+// Mirrors questions.phys_fmt's plain-decimal precision rule (python/__init__.py):
+// decimalPlaces = max(0, sigFigs - 1 - exponent). phys_fmt instead prints
+// values with |exponent| >= 4 in scientific notation for humans — not a
+// string a student would type into a text box, so callers get `extreme: true`
+// and fall back rather than enumerating plain-decimal strings nobody would use.
+function sigFigsPrecision(value, sigFigs) {
+  if (value === 0) return { decimalPlaces: Math.max(0, sigFigs - 1), extreme: false };
+  const exponent = Math.floor(Math.log10(Math.abs(value)));
+  return { decimalPlaces: Math.max(0, sigFigs - 1 - exponent), extreme: exponent >= 4 || exponent <= -4 };
 }
 
 // ── questestinterop.xml builder (one <objectbank> holding every item) ───────
