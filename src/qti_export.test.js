@@ -266,6 +266,31 @@ test("buildItemNode (numerical) rejects a negative tolerance", async () => {
   );
 });
 
+test("buildItemNode (numerical) rejects a non-integer or non-positive sig_figs, but tolerates it being absent", async () => {
+  const base = { qid: "q_bad_sig_figs", type: "numerical", question: "x", answer: 10, tolerance: 0.5 };
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: 2.5 }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: 0 }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  await assert.rejects(() =>
+    buildItemNode({ ...base, sig_figs: "three" }, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] })
+  );
+  // Omitted entirely still defaults to 3, same as before this validation existed.
+  const { node } = await buildItemNode(base, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  assert.match(serialize(node), /rounded to 3 significant figures/);
+});
+
+test("buildItemNode (numerical) never asks Number#toFixed for more than 100 decimal places, however extreme the magnitude", async () => {
+  const question = { qid: "q_tiny_magnitude", type: "numerical", question: "x", answer: 1e-90, tolerance: 1e-92 };
+  const { node } = await buildItemNode(question, { latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [] });
+  const xml = serialize(node);
+  assertWellFormedXmlFragment(xml);
+  assert.equal((xml.match(/<varequal respident="response1">/g) || []).length, 1,
+    "extreme magnitude falls back to a single alternative regardless of tolerance");
+});
+
 test("buildObjectBankXml wraps every item directly under one <objectbank> (no <section> nesting)", async () => {
   const q1 = await buildItemNode({ qid: "q01", question: "A", choices: ["1", "2", "3", "4", "5"], answer: "a" }, {
     latexToMathML: stubLatexToMathML, usedIds: new Set(), failures: [],

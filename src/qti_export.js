@@ -318,8 +318,17 @@ async function buildNumericalItemNode(question, opts) {
   if (tolerance < 0) {
     throw new Error(`buildItemNode: question ${question.qid} has a negative tolerance "${question.tolerance}"`);
   }
-  const rawSigFigs = Number(question.sig_figs);
-  const sigFigs = Number.isFinite(rawSigFigs) ? rawSigFigs : 3;
+  // Mirrors server/qvalidate.py's contract for this field: an integer >= 1,
+  // required only when present at all — a question with no opinion on
+  // precision still defaults to 3 (matching phys_fmt's own default).
+  let sigFigs = 3;
+  if (question.sig_figs !== undefined && question.sig_figs !== null) {
+    const parsedSigFigs = Number(question.sig_figs);
+    if (!Number.isInteger(parsedSigFigs) || parsedSigFigs < 1) {
+      throw new Error(`buildItemNode: question ${question.qid} has invalid sig_figs "${question.sig_figs}"`);
+    }
+    sigFigs = parsedSigFigs;
+  }
 
   // Told to the student, not just baked into grading: without it, "type the
   // number you computed" and "must exactly match one of N rounded strings"
@@ -394,10 +403,14 @@ function enumerateNumericAnswers(answer, tolerance, sigFigs, maxCount = MAX_NUME
 // values with |exponent| >= 4 in scientific notation for humans — not a
 // string a student would type into a text box, so callers get `extreme: true`
 // and fall back rather than enumerating plain-decimal strings nobody would use.
+// decimalPlaces is also clamped to 100 — Number#toFixed's own hard limit —
+// since an extreme enough exponent would otherwise throw a RangeError even
+// on the single-alternative fallback `extreme` routes callers to.
 function sigFigsPrecision(value, sigFigs) {
   if (value === 0) return { decimalPlaces: Math.max(0, sigFigs - 1), extreme: false };
   const exponent = Math.floor(Math.log10(Math.abs(value)));
-  return { decimalPlaces: Math.max(0, sigFigs - 1 - exponent), extreme: exponent >= 4 || exponent <= -4 };
+  const decimalPlaces = Math.min(100, Math.max(0, sigFigs - 1 - exponent));
+  return { decimalPlaces, extreme: exponent >= 4 || exponent <= -4 };
 }
 
 // ── questestinterop.xml builder (one <objectbank> holding every item) ───────
