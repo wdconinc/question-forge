@@ -187,3 +187,4 @@ def resolve_tolerance(value: float, abs_tol: float = None, rel_tol: float = None
     if tolerance < 0:
         raise ValueError(f"resolve_tolerance: resolved tolerance must be non-negative, got {tolerance!r}")
     return tolerance
+
