@@ -340,15 +340,69 @@ async function buildNumericalItemNode(question, opts) {
   return { id, node: el("item", { ident: id, title }, [itemmetadata, presentation, resprocessing]) };
 }
 
+// ── Grouping a question's randomized versions into a named <section> ───────
+
+// Every version of one qid (see groupVersionsByQid/versionedQid above) is
+// wrapped in its own <section ident title="<base title>">, so an instructor
+// can select one question's full set of randomized versions as a single
+// block and drop it straight into a D2L question pool — the whole point of
+// seed-tagging in the first place. A qid with only one version, or whose
+// items were never seed-tagged (a single-paper export), is left as a bare
+// <item> at the objectbank's top level, exactly as before this existed.
+//
+// RISK, read before touching: this nests <section> inside <objectbank>,
+// which is OUTSIDE the CC 1.1 profile this package's manifest declares
+// conformance to — that profile's own schema (ccv1p1_qtiasiv1p2p1_v1p0.xsd,
+// this file's own xsi:schemaLocation) restricts <objectbank> to
+// (qtimetadata?, item+) only, with explicit prose that "the object-bank can
+// only contain Items". Done anyway because a real D2L-exported QTI fixture
+// (Canvas's own qti_exporter test suite, gems/plugins/qti_exporter/
+// spec_canvas/fixtures/d2l/*.xml) shows D2L's own export dialect nesting a
+// named <section> inside an <objectbank> the same way — suggesting D2L's
+// importer may tolerate it even though the declared CC profile forbids it.
+// UNVERIFIED against a real D2L course-level import: this project's history
+// includes more than one confident structural guess (see the top-of-file
+// history) that failed identically and silently, so treat this the same way
+// — unproven until a real test-import confirms both that the questions still
+// land correctly AND that the grouping is visible/usable as a section in
+// D2L's Question Library.
+//
+// items: [{ id, node, qid, title, seed }], qid-contiguous (guaranteed by
+// groupVersionsByQid, which built the question list these items came from).
+export function groupItemsIntoSections(items, usedIds) {
+  const children = [];
+  let i = 0;
+  while (i < items.length) {
+    const qid = items[i].qid;
+    let j = i;
+    while (j < items.length && items[j].qid === qid) j += 1;
+    const group = items.slice(i, j);
+    i = j;
+
+    const isVersioned = group.length > 1 && group.every(it => it.seed !== null && it.seed !== undefined);
+    if (!isVersioned) {
+      children.push(...group.map(it => ({ id: it.id, node: it.node })));
+      continue;
+    }
+    const sectionId = sanitizeIdentifier(`section_${qid}`, usedIds);
+    const title = group[0].title || qid || FALLBACK_ID;
+    children.push({ id: sectionId, node: el("section", { ident: sectionId, title }, group.map(it => it.node)) });
+  }
+  return children;
+}
+
 // ── questestinterop.xml builder (one <objectbank> holding every item) ───────
 
-// A Common Cartridge question bank is a single <objectbank> containing <item>
-// elements directly (no <section> nesting, unlike a CC "assessment"/quiz
-// resource) — confirmed against the 1EdTech CC 1.1 spec and a real IMS QTI
-// ASI reference. Only one question-bank resource is allowed per cartridge, so
-// this always builds the *entire* export as one file.
+// A Common Cartridge question bank is a single <objectbank> resource — only
+// one is allowed per cartridge (confirmed against the 1EdTech CC 1.1 spec),
+// so this always builds the *entire* export as one file. This function only
+// wraps whatever top-level nodes it is given; it does not itself decide
+// between a bare <item> and a <section> — see groupItemsIntoSections above,
+// which wraps a question's randomized versions in a <section> before they
+// ever reach here (and read that function's comment for why that nesting is
+// a flagged, unverified risk rather than a confirmed-safe default).
 //
-// items: [{ id, node }] as produced by buildItemNode, in materialized order.
+// items: [{ id, node }], node may be an <item> or a <section> wrapping several.
 export function buildObjectBankXml(items, opts = {}) {
   const bankId = sanitizeIdentifier(opts.bankId || "question-forge-bank");
 
@@ -431,11 +485,12 @@ export async function buildQtiPackage(materializedQuestions, opts = {}) {
   const items = [];
   for (const q of groupVersionsByQid(materializedQuestions)) {
     const { id, node } = await buildItemNode(q, { latexToMathML, usedIds, failures });
-    items.push({ id, node });
+    items.push({ id, node, qid: String(q.qid ?? ""), title: q.title, seed: q.seed });
   }
+  const bankChildren = groupItemsIntoSections(items, usedIds);
 
   const bankHref = "questestinterop.xml";
-  const bankFile = buildObjectBankXml(items, { bankId: manifestId });
+  const bankFile = buildObjectBankXml(bankChildren, { bankId: manifestId });
   const manifestXml = buildManifestXml(bankFile.id, { manifestId, bankHref });
 
   const ZipCtor = zipFactory || (typeof JSZip !== "undefined" ? JSZip : undefined);

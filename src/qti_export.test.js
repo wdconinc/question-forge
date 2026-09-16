@@ -6,10 +6,12 @@ import {
   versionedTitle,
   groupVersionsByQid,
   buildItemNode,
+  groupItemsIntoSections,
   buildObjectBankXml,
   buildManifestXml,
   buildQtiPackage,
   serialize,
+  el,
 } from "./qti_export.js";
 
 // Minimal dependency-free well-formedness check: every opening tag must have a
@@ -354,6 +356,91 @@ test("buildItemNode leaves a seedless question's ident and title exactly as befo
   assert.equal(id, "q01_units");
   assert.match(serialize(node), /<item ident="q01_units" title="Units"/);
   assert.ok(!serialize(node).includes("seed"), "a single-paper export must not mention a seed");
+});
+
+// ── Grouping randomized versions into a named <section> ──────────────────────
+
+test("groupItemsIntoSections wraps a multi-item, all-seeded qid group in one named <section>", () => {
+  const items = [
+    { id: "q01__seed42", node: el("item", { ident: "q01__seed42" }), qid: "q01", title: "Units", seed: 42 },
+    { id: "q01__seed137", node: el("item", { ident: "q01__seed137" }), qid: "q01", title: "Units", seed: 137 },
+  ];
+  const children = groupItemsIntoSections(items, new Set());
+  assert.equal(children.length, 1);
+  assert.equal(children[0].node.tag, "section");
+  assert.equal(children[0].node.attrs.title, "Units");
+  assert.equal(children[0].node.children.length, 2);
+  assert.deepEqual(children[0].node.children.map(c => c.attrs.ident), ["q01__seed42", "q01__seed137"]);
+});
+
+test("groupItemsIntoSections leaves a single-version qid as a bare <item> (no section)", () => {
+  const items = [{ id: "q01", node: el("item", { ident: "q01" }), qid: "q01", title: "Units", seed: undefined }];
+  const children = groupItemsIntoSections(items, new Set());
+  assert.equal(children.length, 1);
+  assert.equal(children[0].node.tag, "item");
+});
+
+test("groupItemsIntoSections leaves an unseeded multi-item qid group as bare <item>s", () => {
+  // Shouldn't happen via the app's own UI (an unseeded export never repeats a
+  // qid), but the module's own contract is "seeded and >1 is what triggers a
+  // section" — not "more than one item with the same qid".
+  const items = [
+    { id: "q01", node: el("item", { ident: "q01" }), qid: "q01", title: "Units", seed: undefined },
+    { id: "q01_2", node: el("item", { ident: "q01_2" }), qid: "q01", title: "Units", seed: undefined },
+  ];
+  const children = groupItemsIntoSections(items, new Set());
+  assert.equal(children.length, 2);
+  assert.ok(children.every(c => c.node.tag === "item"));
+});
+
+test("groupItemsIntoSections disambiguates a section ident against the shared usedIds set", () => {
+  const used = new Set(["section_q01"]);
+  const items = [
+    { id: "q01__seed42", node: el("item", { ident: "q01__seed42" }), qid: "q01", title: "Units", seed: 42 },
+    { id: "q01__seed137", node: el("item", { ident: "q01__seed137" }), qid: "q01", title: "Units", seed: 137 },
+  ];
+  const [child] = groupItemsIntoSections(items, used);
+  assert.equal(child.node.attrs.ident, "section_q01_2");
+});
+
+test("buildQtiPackage wraps a question's full set of randomized versions in one named <section>, titled with the base (unsuffixed) title", async () => {
+  class FakeZip {
+    constructor() { this.files = {}; }
+    file(path, content) { this.files[path] = content; return this; }
+    async generateAsync() { return { __files: this.files }; }
+  }
+  const mc = { question: "x", choices: ["1", "2", "3", "4", "5"], answer: "a" };
+  const questions = [
+    { qid: "q01", title: "Units", seed: 42, ...mc },
+    { qid: "q02", title: "Kinematics", seed: 42, ...mc },
+    { qid: "q01", title: "Units", seed: 137, ...mc },
+    { qid: "q02", title: "Kinematics", seed: 137, ...mc },
+  ];
+  const { blob } = await buildQtiPackage(questions, { latexToMathML: stubLatexToMathML, zipFactory: FakeZip });
+  const xml = blob.__files["questestinterop.xml"];
+  assertWellFormedXmlFragment(xml);
+  assert.match(xml, /<section ident="[^"]+" title="Units">/);
+  assert.match(xml, /<section ident="[^"]+" title="Kinematics">/);
+  const unitsSection = xml.match(/<section ident="[^"]+" title="Units">([\s\S]*?)<\/section>/)[1];
+  assert.match(unitsSection, /ident="q01__seed42"/);
+  assert.match(unitsSection, /ident="q01__seed137"/);
+  assert.ok(!unitsSection.includes("q02"), "each section must only contain its own question's versions");
+});
+
+test("buildQtiPackage leaves a single-paper (unseeded) export with no <section> at all", async () => {
+  class FakeZip {
+    constructor() { this.files = {}; }
+    file(path, content) { this.files[path] = content; return this; }
+    async generateAsync() { return { __files: this.files }; }
+  }
+  const questions = [
+    { qid: "q01", title: "Units", question: "x", choices: ["1", "2", "3", "4", "5"], answer: "a" },
+    { qid: "q02", title: "Kinematics", question: "x", choices: ["1", "2", "3", "4", "5"], answer: "b" },
+  ];
+  const { blob } = await buildQtiPackage(questions, { latexToMathML: stubLatexToMathML, zipFactory: FakeZip });
+  const xml = blob.__files["questestinterop.xml"];
+  assertWellFormedXmlFragment(xml);
+  assert.ok(!xml.includes("<section"), "an unseeded export must not introduce any section");
 });
 
 test("buildQtiPackage lands every version of a question contiguously, with distinct seed-tagged idents", async () => {
