@@ -23,7 +23,7 @@
   "homepage": "https://github.com/wdconinc/question-forge#readme",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.10.0",
-    "eslint-plugin-html": "^8.2.0"
+    "eslint": "^10.11.0",
+    "eslint-plugin-html": "^8.2.1"
   }
 }
