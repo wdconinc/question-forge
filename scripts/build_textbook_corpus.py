@@ -50,7 +50,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 CNX = "{http://cnx.rice.edu/cnxml}"
 COL = "{http://cnx.rice.edu/collxml}"
@@ -985,7 +985,7 @@ def main():
 
     write_json(out / "manifest.json", {
         "schemaVersion": 1,
-        "builtAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "builtAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "books": books_meta,
     }, pretty=True)
     (out / "LICENSE").write_text(CC_BY_NC_SA, encoding="utf-8")
